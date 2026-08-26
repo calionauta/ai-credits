@@ -28,34 +28,34 @@
       "id": "3",
       "subject": "Scope 3: Reservations",
       "description": "reservation.go Reserve/Settle/Release per PLAN §6.1-6.3. Settle caps at reserved; usage>reserved → ErrReservationClosed. Concurrency-safe anti-negative guard, idempotent by requestID. Tests: 500/137/363, 100-goroutine -race (20 ok/80 ErrInsufficientCredits), duplicate, closed state. Per spec-tech scope 3.",
-      "status": "in_progress",
+      "status": "completed",
       "metadata": {},
       "blocks": [],
       "blockedBy": [],
       "createdAt": 1787704188851,
-      "updatedAt": 1787704786315
+      "updatedAt": 1787705091716
     },
     {
       "id": "4",
       "subject": "Scope 4: Monthly + Reconcile",
       "description": "monthly.go EnsureMonthlyGrant (lazy idempotent, key monthly:user:period), reconcile.go Reconcile (orphan expiry + balance vs ledger mismatch report, no auto-fix). Clock injection cfg.Now. Tests per PLAN §6.5-6.6, Stage 4.",
-      "status": "pending",
+      "status": "completed",
       "metadata": {},
       "blocks": [],
       "blockedBy": [],
       "createdAt": 1787704188852,
-      "updatedAt": 1787704188852
+      "updatedAt": 1787705210963
     },
     {
       "id": "5",
       "subject": "Scope 5: BYOK (credentials + relay)",
       "description": "byok/credentials.go CredentialStore (XChaCha20-Poly1305, 32B key, 24B nonce), byok/relay.go Relay (httputil.ReverseProxy pass-through with Bearer key injection, X-Byok strip, 404 without credential). Tests per PLAN §7, Stage 5.",
-      "status": "pending",
+      "status": "in_progress",
       "metadata": {},
       "blocks": [],
       "blockedBy": [],
       "createdAt": 1787704188852,
-      "updatedAt": 1787704188852
+      "updatedAt": 1787705210964
     },
     {
       "id": "6",
