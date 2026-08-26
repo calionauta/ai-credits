@@ -1,0 +1,148 @@
+version: "2"
+# Source: adapted from calionauta/gogogo-fullstack-template .golangci.yml (battle-tested).
+linters:
+  enable:
+    - errcheck        # unchecked errors
+    - govet           # suspicious constructs (shadow, printf misuse)
+    - staticcheck     # comprehensive static analysis (SA*, S*, QF*)
+    - gosec           # security anti-patterns (hardcoded creds, weak crypto)
+    - revive          # idiomatic style (golint successor)
+    - gocritic        # opinionated checks (incl. ruleguard if rules/ exists)
+    - ineffassign     # assignments whose value is never used
+    - unused          # unexported identifiers never referenced
+    - noctx           # http requests without context.Context
+    - funlen          # function length limit
+    - gocyclo         # cyclomatic complexity
+    - goconst         # repeated strings that should be constants
+    - lll             # long line detection
+    - dupl            # duplicated code blocks
+    - mnd             # magic numbers (allow basic tolerances)
+    - tagliatelle     # struct tag conventions (json/yaml/etc.)
+    # tagliatelle below is configured to snake_case because the ai-credits
+    # pricing JSON format is specified as snake_case in PLAN.md §5.1.
+    - modernize       # modern Go idioms (slices.Contains, min/max, etc.)
+    - nolintlint      # ill-formed / insufficient //nolint directives
+    - thelper         # test helpers must call t.Helper()
+    - errorlint       # error wrapping must use %w, errors.Is/As
+    - nilerr          # returning nil error when function signals an error
+    - sloglint        # structured logging key-value pairs must be constant
+    - contextcheck    # context must propagate through call chains
+    - containedctx    # structs must not embed context.Context
+    - bodyclose       # HTTP response body must be closed
+    - testifylint     # testify assert vs require checks
+    - gocognit        # cognitive complexity (readability, not paths)
+    # Note: stylecheck's ST* analyzers are bundled into `staticcheck` in
+    # golangci-lint v2, so enabling staticcheck (above) already covers
+    # them. `gofumpt` is a formatter, configured under `formatters:` below.
+  settings:
+    tagliatelle:
+      case:
+        # ai-credits pricing JSON config is snake_case (PLAN §5.1)
+        rules:
+          json: snake
+    errcheck:
+      check-type-assertions: true
+      check-blank: false    # blank identifier (_ = expr()) is idiomatic Go for intentional error discard
+    gosec:
+      severity: medium
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment  # too noisy for template-heavy projects
+    revive:
+      rules:
+        - name: exported
+        - name: var-naming
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: dot-imports
+        - name: empty-block
+        - name: superfluous-else
+        - name: unused-parameter
+        - name: var-declaration
+        - name: package-comments
+    funlen:
+      lines: 100
+      statements: 60
+    gocyclo:
+      min-complexity: 12
+    gocognit:
+      min-complexity: 25
+    testifylint:
+      enable-all: false
+      disable:
+        - float-compare
+        - go-require
+        - compares
+      disable-all: false
+    sloglint:
+      no-mixed-args: true
+    goconst:
+      min-len: 4
+      min-occurrences: 3
+    lll:
+      line-length: 120
+      tab-width: 1
+    mnd:
+      checks:
+        - argument
+        - case
+        - condition
+        - return
+      ignored-numbers:
+        - "0"
+        - "1"
+        - "2"
+        - "3"
+        - "10"
+        - "100"
+        - "1000"
+        - "200"
+        - "500"
+        - "10000"
+        - "150405"  # time.Now format HHMMSS
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      # Ignore length checks in templ-generated files
+      - path: (.+)_templ\.go
+        linters:
+          - funlen
+          - gocyclo
+          - dupl
+          - lll
+      # Test files repeat short literals (field names like "email",
+      # presence type tags) below the signal threshold; don't fail CI on
+      # goconst/mnd noise there.
+      - path: _test\.go
+        linters:
+          - unused
+          - goconst
+          - mnd
+          - funlen
+      # E2E and integration tests are inherently complex; cyclomatic
+      # complexity is a design concern, not a correctness risk.
+      - path: _test\.go
+        linters:
+          - gocyclo
+      # bodyclose is for production HTTP callers, not test response readers
+      # (tests should NOT close the response body of an httptest server).
+      - path: _test\.go
+        linters:
+          - bodyclose
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/calionauta/ai-credits

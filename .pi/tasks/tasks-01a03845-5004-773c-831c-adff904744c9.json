@@ -1,0 +1,89 @@
+{
+  "nextId": 8,
+  "tasks": [
+    {
+      "id": "1",
+      "subject": "Run stelow triage → select → setup → context for ai-credits",
+      "description": "Advance the stelow workflow from triage through select, setup, context. Read PLAN.md (done), verify environment facts, record intent=new-product. Use bb stelow advance for transitions.",
+      "status": "completed",
+      "activeForm": "Running triage through context stages",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1787650674986,
+      "updatedAt": 1787650759754
+    },
+    {
+      "id": "2",
+      "subject": "Shape + critique + product gate",
+      "description": "Produce spec-product_v1.md from PLAN.md (appetite Core), run critique, then gate: bb stelow ask for visual approval. Write gate-approved.md receipt on approval.",
+      "status": "in_progress",
+      "activeForm": "Shaping and gating product spec",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1787650674987,
+      "updatedAt": 1787650759755
+    },
+    {
+      "id": "3",
+      "subject": "Scope + interface + int-gate + selection",
+      "description": "Scope report (IN/OUT), interface alternatives doc, int-gate approval via bb stelow ask, then selection question.",
+      "status": "pending",
+      "activeForm": "Scoping and selecting interface",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1787650674987,
+      "updatedAt": 1787650674987
+    },
+    {
+      "id": "4",
+      "subject": "Tech planning + plan-gate",
+      "description": "Write spec-tech_v1.md (typed scopes + sequencing per PLAN.md §10), plan-gate approval via bb stelow ask.",
+      "status": "pending",
+      "activeForm": "Writing tech plan",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1787650674988,
+      "updatedAt": 1787650674988
+    },
+    {
+      "id": "5",
+      "subject": "Execution: implement ai-credits lib stages 0-5",
+      "description": "Implement per PLAN.md: scaffold (go.mod go1.26, LICENSE, AGENTS.md, CI), schema+ledger, pricing+usage, reservations, monthly+reconcile, BYOK. All green under go test -race ./... and golangci-lint.",
+      "status": "pending",
+      "activeForm": "Implementing ai-credits library",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1787650674988,
+      "updatedAt": 1787650674988
+    },
+    {
+      "id": "6",
+      "subject": "Execution: gogogo + treinamento integration + Stripe",
+      "description": "Per PLAN.md §11-12, §10 stages 6-8: features/credits plugin in gogogo, thin integration in treinamento, Stripe checkout+webhook gated by env.",
+      "status": "pending",
+      "activeForm": "Integrating into gogogo and treinamento",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1787650674989,
+      "updatedAt": 1787650674989
+    },
+    {
+      "id": "7",
+      "subject": "Verification + diff-gate + audit",
+      "description": "Full test suite (go test -race ./...), golangci-lint, diff-gate approval via bb stelow ask, final audit, session summary.",
+      "status": "pending",
+      "activeForm": "Verifying and auditing",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1787650674989,
+      "updatedAt": 1787650674989
+    }
+  ]
+}
