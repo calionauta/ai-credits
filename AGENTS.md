@@ -57,3 +57,7 @@ See README.md for the complete example including BYOK.
 ## DoD
 
 `go test -race ./...` + `golangci-lint run ./...` green; no deps beyond x/crypto.
+`govulncheck` last ran with 0 reachable vulns (all 17 findings were Go
+stdlib os/exec, crypto/tls, asn1, net/textproto entries from the stale local
+go1.26.0 toolchain, none reachable from our code). Bump the toolchain for a
+fully clean report.

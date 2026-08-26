@@ -50,12 +50,12 @@
       "id": "5",
       "subject": "Scope 5: BYOK (credentials + relay)",
       "description": "byok/credentials.go CredentialStore (XChaCha20-Poly1305, 32B key, 24B nonce), byok/relay.go Relay (httputil.ReverseProxy pass-through with Bearer key injection, X-Byok strip, 404 without credential). Tests per PLAN §7, Stage 5.",
-      "status": "in_progress",
+      "status": "completed",
       "metadata": {},
       "blocks": [],
       "blockedBy": [],
       "createdAt": 1787704188852,
-      "updatedAt": 1787705210964
+      "updatedAt": 1787705620134
     },
     {
       "id": "6",
