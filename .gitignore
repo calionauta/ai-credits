@@ -6,3 +6,10 @@
 credits.db
 bin/
 coverage.out
+# Tooling cruft
+.pi/
+.stelow/
+
+stelow.json
+state.md
+skills/
