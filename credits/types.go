@@ -23,6 +23,12 @@ var (
 	ErrReservationExceeded = errors.New("credits: actual cost exceeds reservation")
 )
 
+// Billing modes recorded in llm_usage.billing_mode.
+const (
+	billingModeManaged = "managed"
+	billingModeByok    = "byok"
+)
+
 // Usage describes a single LLM call for RecordUsage.
 type Usage struct {
 	RequestID       string

@@ -1,6 +1,9 @@
 package credits
 
 import (
+	"bytes"
+	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
@@ -13,7 +16,13 @@ import (
 // strips any external copy.
 //
 // Request form: POST /api/byok/{provider}/{path...}
+//
+// The relay meters every upstream call: it captures the OpenAI-compatible
+// usage from the upstream response (JSON or final SSE chunk) and persists an
+// llm_usage row with billing_mode=byok and credits_charged=0, so BYOK calls
+// become visible to analytics/throttling without charging the user.
 type ByokRelay struct {
+	svc    *Service
 	stores *CredentialStore
 	bases  map[string]string // provider -> upstream base URL (e.g. https://api.openai.com/v1)
 	logger *slog.Logger
@@ -25,7 +34,7 @@ func (s *Service) NewByokRelay(stores *CredentialStore, bases map[string]string,
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &ByokRelay{stores: stores, bases: bases, logger: logger}
+	return &ByokRelay{svc: s, stores: stores, bases: bases, logger: logger}
 }
 
 // ServeHTTP proxies the request to the configured provider base with the
@@ -55,6 +64,8 @@ func (r *ByokRelay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 	upstreamPath := outboundPath(target.Path, rest)
 
+	errLogger := slog.NewLogLogger(r.logger.Handler(), slog.LevelWarn)
+
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.Out.URL.Scheme = target.Scheme
@@ -65,7 +76,44 @@ func (r *ByokRelay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			pr.Out.Header.Del("X-Byok-Key")
 			pr.Out.Header.Del("X-Auth-User")
 		},
-		ErrorLog: slog.NewLogLogger(r.logger.Handler(), slog.LevelWarn),
+		ErrorLog: errLogger,
 	}
-	proxy.ServeHTTP(w, req)
+
+	// Meter the call: wrap the writer to capture usage, persist after serving.
+	meter := &usageRW{
+		ResponseWriter: w, rel: r, ctx: req.Context(),
+		rec: Usage{
+			RequestID: newRequestIDForRelay(req), UserID: userID,
+			Provider: provider, Model: modelFromBody(req), BillingMode: billingModeByok,
+		},
+	}
+	proxy.ServeHTTP(meter, req)
+	meter.finish()
+}
+
+// newRequestIDForRelay derives a stable idempotent request id for the relay
+// metering row. It prefers an inbound X-Byok-Request-Id (if the app sets one
+// so webhooks/retries dedupe) and otherwise mints a fresh one per call.
+func newRequestIDForRelay(req *http.Request) string {
+	if id := req.Header.Get("X-Byok-Request-Id"); id != "" {
+		return "byok:" + id
+	}
+	return NewRequestID()
+}
+
+// modelFromBody reads the request's JSON body to extract the "model" field
+// for the usage row (Best effort: a parse failure or streaming body is
+// ignored — the row still records provider without a model).
+func modelFromBody(req *http.Request) string {
+	if req.Body == nil {
+		return ""
+	}
+	var b struct {
+		Model string `json:"model"`
+	}
+	body, _ := io.ReadAll(req.Body)
+	req.Body.Close()
+	req.Body = io.NopCloser(bytes.NewReader(body))
+	_ = json.Unmarshal(body, &b)
+	return b.Model
 }

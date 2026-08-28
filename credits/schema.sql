@@ -62,3 +62,11 @@ CREATE TABLE IF NOT EXISTS byok_credentials (
     updated_at    INTEGER NOT NULL,
     PRIMARY KEY (user_id, provider)
 );
+
+CREATE TABLE IF NOT EXISTS subscriptions (
+    user_id    TEXT PRIMARY KEY,
+    plan       TEXT NOT NULL,                  -- plan key used in PlanMonthlyCredits
+    status     TEXT NOT NULL,                  -- active|cancelled|paused
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
