@@ -352,13 +352,16 @@ tx:
 commit
 ```
 
-### 6.2 Settle(reservationID, actualCost)
+### 6.2 Settle(r *Reservation, actualCredits)
+
+`actualCredits` é em CREDITS (não micro-units). Se o custo real exceder a
+reserva → `ErrReservationExceeded` (não cobra além do reservado).
 
 ```
 tx:
   SELECT amount, status FROM credit_reservations WHERE id = ?   -- senão ErrReservationNotFound
   se status != 'reserved' → ErrReservationClosed
-  se actualCost > amount → ErrReservationClosed (bug; não cobrar além do reservado)
+  se actualCost > amount → ErrReservationExceeded (não cobrar além do reservado)
   excess = amount - actualCost
   UPDATE credit_reservations SET status='captured', captured_amount=actualCost,
          released_amount=excess, updated_at=? WHERE id = ?
@@ -369,10 +372,19 @@ tx:
 commit
 ```
 
-### 6.3 Release(reservationID)
+### 6.3 Release(r *Reservation)
 
-Igual ao Settle com `actualCost = 0` (ou caminho próprio que devolve `amount` inteiro,
+Igual ao Settle com `actualCredits = 0` (ou caminho próprio que devolve `amount` inteiro,
 status='released').
+
+### 6.3.1 Under-reserve (custo real > reserva) — política
+
+`EstimateMax` é conservador (margem 1.2× + ignora cache, que só reduz custo), então
+`ErrReservationExceeded` é raro, mas precisa de estratégia. O design NÃO permite cobrar
+além do reservado nem re-Reserve do mesmo `requestID` (idempotência). Mitigação do app:
+usar sufixo único no `requestID` por tentativa (ex. `req-abc-1`, `req-abc-2`) para que
+um retry possa `Release` a reserva curta e abrir uma nova com margem maior. O core da
+lib não muda (KISS); documentado aqui para os integradores.
 
 ### 6.4 Política de reembolso (DECIDIDA — uma só)
 
