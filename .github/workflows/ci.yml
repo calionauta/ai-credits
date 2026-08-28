@@ -19,8 +19,12 @@ jobs:
       - name: Test (race)
         run: go test -race ./...
       - name: Lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v7
         with:
-          version: latest
+          # v7 installs golangci-lint v2.x (built with a recent Go). The old
+          # v6 action pinned v1.64.8 (built with go1.24) which errors on our
+          # go 1.26 directive: "language version used to build golangci-lint
+          # is lower than the targeted Go version". v2.12.2 matches local.
+          version: v2.12.2
       - name: Vulnerabilities
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
