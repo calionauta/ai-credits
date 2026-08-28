@@ -3,6 +3,16 @@
 SQLite-backed credits/billing + BYOK for AI applications. Zero deps beyond
 `golang.org/x/crypto`.
 
+The library supports two billing modes:
+
+- **managed** — the app bills the user for its own LLM calls: a JSON pricing
+  engine prices each call (`Cost`/`Credits`), `Reserve` holds a conservative
+  bound for unknown-cost calls, `Settle`/`Release` finalize with the real
+  usage.
+- **byok** — each user brings their own provider key; the relay meters the
+  upstream call into `llm_usage` for analytics/throttling but charges nothing
+  (`credits_charged=0`).
+
 - Immutable ledger + materialized balance (`balance == SUM(ledger)` invariant)
 - JSON-configurable pricing engine (`Cost`, `EstimateMax`, `Credits`)
 - Reserve / Settle / Release for unknown-output LLM calls (concurrency-safe)
@@ -78,6 +88,26 @@ func must[T any](v T, err error) T {
 	return v
 }
 ```
+
+## Managed (usage-based billing)
+
+The `Example` above is the **managed** flow: your app owns the provider call and
+bills the user for it.
+
+1. **Price** — `Cost(ctx, Usage)` converts a model + token counts to micro-units
+   via the JSON pricing engine; `Credits(ctx, Usage)` converts that to credits
+   (`ceil(cost / microunits_per_credit)`).
+2. **Reserve** — before an unknown-cost LLM call, `EstimateMax(model, in,
+   maxOut)` returns a conservative reserve (`cost × 1.2`) and `Reserve` holds it
+   against the user's balance (idempotent by request id). A call must be
+   authorized *before* it runs (fail-closed: `ErrInsufficientBalance` blocks
+   it).
+3. **Settle** — after the call, `Settle(r, actualCredits)` charges the real
+   usage and refunds the rest; overage is auto-drawn from the remaining balance
+   (a slightly low estimate doesn't fail a successful call).
+
+Only calls that actually ran get charged; `Release(r)` returns an unused reserve.
+The `balance == SUM(ledger)` invariant holds across all of it.
 
 ## BYOK (bring your own key)
 
