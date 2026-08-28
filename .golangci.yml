@@ -19,7 +19,7 @@ linters:
     - mnd             # magic numbers (allow basic tolerances)
     - tagliatelle     # struct tag conventions (json/yaml/etc.)
     # tagliatelle below is configured to snake_case because the ai-credits
-    # pricing JSON format is specified as snake_case in PLAN.md §5.1.
+    # pricing JSON format is specified as snake_case in docs/architecture.md §Pricing.
     - modernize       # modern Go idioms (slices.Contains, min/max, etc.)
     - nolintlint      # ill-formed / insufficient //nolint directives
     - thelper         # test helpers must call t.Helper()

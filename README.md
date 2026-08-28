@@ -79,14 +79,34 @@ func must[T any](v T, err error) T {
 }
 ```
 
-BYOK usage, the relay handler, and the app integrations are in the README
-sections below (added in later scope stages) and in PLAN.md.
+## BYOK (bring your own key)
 
-## Docs
-- `PLAN.md` — executable implementation plan (architecture, schema, contracts).
+For apps where each user brings their own LLM provider key, the library ships a
+credential store plus an in-process relay that meters every upstream call.
+
+1. **Configure the encryption key** the relay uses to store keys at rest:
+   `CREDITS_ENC_KEY` (hex of 32 bytes, e.g. `openssl rand -hex 32`), passed to
+   `NewCredentialStore`. No key → the store is disabled (clear error).
+2. **Define provider bases** — a `map[string]string` of provider →
+   OpenAI-compatible base URL (e.g. `openai: https://api.openai.com/v1`).
+3. **Mount the relay** behind your auth middleware (the relay does not
+   authenticate; it trusts `X-Auth-User`, which the app must set only after
+   session validation and strip from external requests):
+
+```go
+store := svc.NewCredentialStore(key32)          // key32 [32]byte
+relay := svc.NewByokRelay(store, providerBases, logger)
+mux.Handle("/api/byok/", authMiddleware(relay)) // POST /api/byok/{provider}/{path...}
+```
+
+Each call is proxied OpenAI-compat to the user's provider with their key injected
+as the bearer token, and the upstream `usage` (JSON or final SSE chunk) is
+captured into `llm_usage` with `billing_mode=byok` and `credits_charged=0` — so
+BYOK calls are visible to analytics/throttling without charging the user.
+
+## Architecture
+
+Design reference (schema, pricing, domain rules, BYOK relay, security,
+deliberate simplifications): [`docs/architecture.md`](docs/architecture.md).
+
 - [MIT](./LICENSE)
-
-## Status
-
-Library core (scaffold, schema, ledger, pricing, reservations, monthly,
-reconcile, BYOK) — see PLAN.md stages.
