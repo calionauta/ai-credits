@@ -418,6 +418,19 @@ Chamado pelo app ANTES da primeira leitura de saldo do período (middleware/gate
 `Grant` com chave duplicada → `ErrDuplicateGrant` tratado como sucesso (no-op) pelo
 chamador de `EnsureMonthlyGrant`.
 
+### 6.6.1 Gate de entitlement (subscription, v0.2.0)
+
+`EnsureMonthlyGrant` consulta `subscriptions` antes de conceder: se existir um
+registro (SetSubscription) e o status != `active` (cancelled/paused), o grant é
+recusado (billing do plano parado; saldo existente permanece utilizável). Sem
+registro (apps pré-pago, BYOK-first), o grant é incondicional — retrocompatível.
+
+```
+SetSubscription(userID, plan, active|cancelled|paused)
+CancelSubscription(userID)   // shorthand → SetSubscription(..., cancelled)
+Subscription(userID)         // → Subscription | ErrSubscriptionNotFound
+```
+
 ### 6.7 Consumo: pool único
 
 v1 usa um único saldo; a ordem "monthly → promo → prepaid" (§21 do plano original) é
@@ -459,6 +472,12 @@ então a separação futura é migração de leitura, não de dados.
      `X-Byok-*` internos.
   4. Copia status/body (SSE/fluxo passam naturalmente — ReverseProxy copia o corpo
      chunked; não bufferizar).
+  5. **Metering (v0.2.0)**: o relay envolve a resposta com `usageRW`, que
+     repassa os bytes intactos e, ao final, extrai o `usage` OpenAI-compat do
+     corpo (JSON não-streaming OU o último chunk `data: {json}` antes de
+     `[DONE]`) e grava linha em `llm_usage` (billing_mode=byok,
+     credits_charged=0). Model lido do body (best-effort); request id de
+     `X-Byok-Request-Id` inbound (`byok:<id>`, idempotente) ou novo.
 - Sem rate limit no v1 (ponytail: rate limit por usuário se abuso; o app decide).
 
 ### 7.3 Identidade

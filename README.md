@@ -7,8 +7,11 @@ SQLite-backed credits/billing + BYOK for AI applications. Zero deps beyond
 - JSON-configurable pricing engine (`Cost`, `EstimateMax`, `Credits`)
 - Reserve / Settle / Release for unknown-output LLM calls (concurrency-safe)
 - Lazy idempotent monthly grants (no scheduler)
-- Reconcile (orphan reservation expiry + balance/ledger drift report)
+- Subscription lifecycle: plan status (active/paused/cancelled) gates the
+  monthly grant (entitlement), `SetSubscription`/`CancelSubscription`
 - BYOK: XChaCha20-Poly1305-encrypted credential store + in-process relay
+  that auto-meters every upstream call into `llm_usage` (billing_mode=byok)
+- Reconcile (orphan reservation expiry + balance/ledger drift report)
 
 ## Install
 

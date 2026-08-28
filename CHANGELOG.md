@@ -17,6 +17,24 @@ e o projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
   `(bool, error)`; novo `Credits(ctx, usage)`). Documentada a política de
   under-reserve (§6.3.1) e a mitigação no app.
 
+## [v0.2.0] - 2026-08-28
+
+### Added
+- **BYOK relay metering**: o relay agora captura o `usage` da resposta upstream
+  (JSON não-streaming OU o último chunk `data: {json}` antes de `[DONE]` no
+  streaming) e persiste uma linha em `llm_usage` com `billing_mode=byok`,
+  `credits_charged=0`. BYOK vira passível de analytics/throttling sem cobrar o
+  usuário. `X-Byok-Request-Id` no inbound permite idempotência (`byok:<id>`).
+- **Subscription lifecycle** (gate de entitlement): tabela `subscriptions`
+  (user_id, plan, status) + `SetSubscription` / `CancelSubscription` /
+  `Subscription`. `EnsureMonthlyGrant` recusa conceder quando a assinatura
+  existe e não está `active`. Sem registro (apps pré-pago) o grant continua
+  incondicional — retrocompatível.
+
+### Fixed
+- (v0.1.1) README example usava micro-units no `Settle` (devia ser credits) e
+  `sql.Open` sem pragmas WAL — trocado para `OpenSQLite` + `svc.Credits`.
+
 ## [Unreleased]
 
 ### Added
@@ -46,6 +64,7 @@ e o projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
   reconcile (detecção de drift + expiração de reservas obsoletas), store de
   credenciais BYOK (XChaCha20-Poly1305) + relay HTTP.
 
-[Unreleased]: https://github.com/calionauta/ai-credits/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/calionauta/ai-credits/compare/v0.2.0...HEAD
+[v0.2.0]: https://github.com/calionauta/ai-credits/releases/tag/v0.2.0
 [v0.1.1]: https://github.com/calionauta/ai-credits/releases/tag/v0.1.1
 [v0.1.0]: https://github.com/calionauta/ai-credits/releases/tag/v0.1.0
