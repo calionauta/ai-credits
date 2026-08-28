@@ -102,18 +102,47 @@ func newRequestIDForRelay(req *http.Request) string {
 }
 
 // modelFromBody reads the request's JSON body to extract the "model" field
-// for the usage row (Best effort: a parse failure or streaming body is
-// ignored — the row still records provider without a model).
+// for the usage row, and — for a streaming chat completion — injects
+// `stream_options.include_usage=true` so the provider returns usage in the
+// final SSE chunk (otherwise the relay's streaming metering sees nothing).
+// Best effort: parse failures or non-JSON bodies are passed through intact.
 func modelFromBody(req *http.Request) string {
 	if req.Body == nil {
 		return ""
 	}
-	var b struct {
-		Model string `json:"model"`
-	}
-	body, _ := io.ReadAll(req.Body)
+	body, err := io.ReadAll(req.Body)
 	req.Body.Close()
+	if err != nil {
+		req.Body = io.NopCloser(bytes.NewReader(nil))
+		return ""
+	}
+
+	var v struct {
+		Model  string `json:"model"`
+		Stream *bool  `json:"stream"`
+	}
+	_ = json.Unmarshal(body, &v)
+
+	// Streaming chat completion: force include_usage=true for metering.
+	if v.Stream != nil && *v.Stream {
+		var patched map[string]any
+		if json.Unmarshal(body, &patched) == nil {
+			opts, _ := patched["stream_options"].(map[string]any)
+			if opts == nil {
+				opts = map[string]any{}
+			}
+			opts["include_usage"] = true
+			patched["stream_options"] = opts
+			if out, err := json.Marshal(patched); err == nil {
+				body = out
+			}
+		}
+	}
+
 	req.Body = io.NopCloser(bytes.NewReader(body))
-	_ = json.Unmarshal(body, &b)
-	return b.Model
+	// The reverse proxy forwards ContentLength bytes upstream; if the patched
+	// body is longer than the original (include_usage added), keep it in sync
+	// or upstream truncates at the stale length.
+	req.ContentLength = int64(len(body))
+	return v.Model
 }

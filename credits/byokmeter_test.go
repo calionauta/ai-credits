@@ -105,6 +105,63 @@ func TestByokRelayMetersSSE(t *testing.T) {
 	}
 }
 
+// The relay injects stream_options.include_usage=true on streaming requests so
+// the provider returns usage in the final SSE chunk (the metering depends on
+// it). Non-streaming bodies are passed through unchanged.
+func TestByokRelayInjectsStreamUsage(t *testing.T) {
+	s, cleanup := newTestService(t)
+	defer cleanup()
+	ctx := context.Background()
+	cfg := testCredStore(t, s)
+	if err := cfg.Put(ctx, testUser, "openai", "tok"); err != nil {
+		t.Fatal(err)
+	}
+
+	var gotStream, gotNonStream string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		r.Body.Close()
+		if strings.Contains(r.URL.Path, "/stream") {
+			gotStream = string(b)
+		} else {
+			gotNonStream = string(b)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer upstream.Close()
+
+	relay := s.NewByokRelay(cfg, map[string]string{"openai": upstream.URL}, slog.New(slog.DiscardHandler))
+	ts := httptest.NewServer(relay)
+	defer ts.Close()
+
+	post := func(path, body string) {
+		req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+			ts.URL+"/api/byok/openai"+path, strings.NewReader(body))
+		req.Header.Set("X-Auth-User", testUser)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+	}
+
+	// Streaming → include_usage added.
+	post("/v1/chat/completions/stream", `{"model":"m","stream":true}`)
+	if !strings.Contains(gotStream, `"include_usage":true`) {
+		t.Fatalf("streaming body missing include_usage: %s", gotStream)
+	}
+
+	// Non-streaming → body unchanged (no include_usage injected).
+	post("/v1/chat/completions", `{"model":"m"}`)
+	if strings.Contains(gotNonStream, "include_usage") {
+		t.Fatalf("non-streaming body should not get include_usage: %s", gotNonStream)
+	}
+	if !strings.Contains(gotNonStream, `"model":"m"`) {
+		t.Fatalf("non-streaming body mangled: %s", gotNonStream)
+	}
+}
+
 // queryRecentUsage reads the newest llm_usage row for a user for assertions.
 func (s *Service) queryRecentUsage(ctx context.Context, t *testing.T, userID string) (Usage, error) {
 	t.Helper()
