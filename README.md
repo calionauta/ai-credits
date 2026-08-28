@@ -23,7 +23,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"log"
 
@@ -33,7 +32,9 @@ import (
 
 func main() {
 	ctx := context.Background()
-	db, err := sql.Open("sqlite", "app.db")
+	// OpenSQLite applies the WAL + busy_timeout pragmas the concurrency-safe
+	// ledger needs; a bare sql.Open can deadlock on concurrent writes.
+	db, err := credits.OpenSQLite("sqlite", "app.db")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -44,7 +45,9 @@ func main() {
 
 	const user = "user-123"
 	// top-up / signup grant (idempotent by key)
-	svc.Grant(ctx, user, 1000, "signup", "welcome", "signup:"+user)
+	if err := svc.Grant(ctx, user, 1000, "signup", "welcome", "signup:"+user); err != nil {
+		log.Fatal(err)
+	}
 
 	// unknown-output call: reserve a conservative max, settle actual
 	max, _ := svc.EstimateMax(ctx, "gpt-4o-mini", 1500, 800)
@@ -53,8 +56,11 @@ func main() {
 	// ... run the LLM call, then:
 	usage := credits.Usage{Model: "gpt-4o-mini", BillingMode: "managed",
 		InputTokens: 1500, OutputTokens: 412}
-	cost, _ := svc.Cost(ctx, usage) // micro-units
-	if err := svc.Settle(ctx, rsv, cost); err != nil {
+	// Settle takes CREDITS (not micro-units). Convert the cost to credits
+	// first — passing micro-units would look like a huge over-charge and
+	// Settle returns ErrReservationExceeded.
+	creditsUsed, _ := svc.Credits(ctx, usage)
+	if err := svc.Settle(ctx, rsv, creditsUsed); err != nil {
 		log.Fatal(err)
 	}
 	svc.RecordUsage(ctx, usage)
