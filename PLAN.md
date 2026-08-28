@@ -141,26 +141,31 @@ func (s *Service) Balance(ctx context.Context, userID string) (int64, error)
 func (s *Service) Grant(ctx context.Context, userID string, amount int64, source, reason, idempotencyKey string) error // idempotente
 func (s *Service) Refund(ctx context.Context, userID string, amount int64, source, reason, idempotencyKey string) error
 
-// Reservas
-func (s *Service) Reserve(ctx context.Context, userID, requestID string, maxCost int64) (reservationID string, err error) // idempotente por requestID
-func (s *Service) Settle(ctx context.Context, reservationID string, actualCost int64) error // capture + release do excedente
-func (s *Service) Release(ctx context.Context, reservationID string) error
+// Reservas — trabalham em CREDITS (não micro-units); Reserve devolve o
+// *Reservation concreto (não um id string). Idempotente por requestID.
+func (s *Service) Reserve(ctx context.Context, userID, requestID string, amount int64) (*Reservation, error)
+func (s *Service) Settle(ctx context.Context, r *Reservation, actualCredits int64) error // capture + release do excedente
+func (s *Service) Release(ctx context.Context, r *Reservation) error
+
+type Reservation struct {
+	ID        string
+	UserID    string
+	RequestID string
+	Amount    int64 // credits reservados (= estimativa máxima)
+	Status    string // reserved|captured|released|expired
+}
 
 // Mensal
-func (s *Service) EnsureMonthlyGrant(ctx context.Context, userID, plan string) error // idempotente por user+period
+func (s *Service) EnsureMonthlyGrant(ctx context.Context, userID, plan string) (bool, error) // idempotente por user+period; true se concedeu
 
 // Uso e pricing
 func (s *Service) RecordUsage(ctx context.Context, u Usage) error
 func (s *Service) Cost(ctx context.Context, u Usage) (microunits int64, err error)   // pricing engine
+func (s *Service) Credits(ctx context.Context, u Usage) (int64, error)               // ceil(cost / per-credit) — use ESTE p/ Settle
 func (s *Service) EstimateMax(ctx context.Context, model string, inputTokens, maxOutputTokens int) (credits int64, err error)
 
 // Reconcile
-type ReconcileReport struct {
-    BalanceMismatches []Mismatch  // user_id, ledger_sum, balance
-    ExpiredReservations []string  // reservation ids liberados
-    CreditsReturned    int64
-}
-func (s *Service) Reconcile(ctx context.Context) (ReconcileReport, error)
+func (s *Service) Reconcile(ctx context.Context) ([]Mismatch, error)
 
 // Types
 type Usage struct {
