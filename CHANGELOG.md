@@ -17,6 +17,26 @@ e o projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
   `(bool, error)`; novo `Credits(ctx, usage)`). Documentada a política de
   under-reserve (§6.3.1) e a mitigação no app.
 
+## [v0.3.0] - 2026-08-28
+
+### Changed
+- **Under-reserve auto-draws overage**: `Settle` deixa de retornar
+  `ErrReservationExceeded` quando o custo real excede a reserva. Agora cobra o
+  custo integral e **debita o excedente do saldo disponível** (`reservation_overage`),
+  padrão da indústria (Stripe credits / Orb on-demand). Se o saldo ficar
+  negativo, o próximo `Reserve` falha (dívida/fail-closed). Invariante
+  `balance == SUM(ledger)` preservado (verificado por `Reconcile`).
+  `ErrReservationExceeded` mantido como deprecated (nunca mais retornado).
+
+### Fixed
+- **BYOK streaming metering**: o relay não pedia `stream_options.include_usage`,
+  então a maioria dos providers OpenAI-compat omitia `usage` no chunk SSE final
+  e o metering de streaming não via nada. Agora injeta `include_usage=true` em
+  `stream:true` (corpo preservado em não-streaming).
+- **Bug de `ContentLength` no relay**: o corpo era trocado pelo patched mas o
+  `ContentLength` mantinha o valor original (menor), truncando o body upstream
+  sempre que o patch (ou um body maior) ultrapassava o tamanho original.
+
 ## [v0.2.0] - 2026-08-28
 
 ### Added
@@ -64,7 +84,8 @@ e o projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
   reconcile (detecção de drift + expiração de reservas obsoletas), store de
   credenciais BYOK (XChaCha20-Poly1305) + relay HTTP.
 
-[Unreleased]: https://github.com/calionauta/ai-credits/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/calionauta/ai-credits/compare/v0.3.0...HEAD
+[v0.3.0]: https://github.com/calionauta/ai-credits/releases/tag/v0.3.0
 [v0.2.0]: https://github.com/calionauta/ai-credits/releases/tag/v0.2.0
 [v0.1.1]: https://github.com/calionauta/ai-credits/releases/tag/v0.1.1
 [v0.1.0]: https://github.com/calionauta/ai-credits/releases/tag/v0.1.0
