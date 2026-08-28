@@ -17,3 +17,16 @@ func newID() (string, error) {
 	}
 	return hex.EncodeToString(b), nil
 }
+
+// NewRequestID returns a fresh random id for a usage/reservation/lookup key
+// (e.g. "req:<id>"). Wraps newID — the one place goai-less call sites get an
+// idempotency-scoped id without importing uuid themselves.
+func NewRequestID() string {
+	id, err := newID()
+	if err != nil {
+		// crypto/rand failing means the process is broken; a fallback keeps
+		// callers simple (they never see an error). Collisions are ~impossible.
+		panic("credits: crypto/rand unavailable: " + err.Error())
+	}
+	return id
+}
