@@ -18,8 +18,12 @@ var (
 	ErrDuplicateGrant = errors.New("credits: idempotency key already used")
 	// ErrUnknownModel means the pricing table has no entry for the model.
 	ErrUnknownModel = errors.New("credits: unknown model in pricing table")
-	// ErrReservationExceeded means settling for more than the reserved amount
-	// (a misconfiguration — never silently clamp).
+	// ErrReservationExceeded existed when Settle refused to charge beyond the
+	// reserved amount. Settle now auto-draws the deficit (reservation_overage)
+	// instead, so this is kept only for callers that may still reference it; it
+	// is no longer returned by the library.
+	//
+	// Deprecated: Settle auto-draws overage; this sentinel is never returned now.
 	ErrReservationExceeded = errors.New("credits: actual cost exceeds reservation")
 )
 

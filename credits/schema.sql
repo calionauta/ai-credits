@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS credit_transactions (
     id              TEXT PRIMARY KEY,          -- hex crypto/rand 16 bytes
     user_id         TEXT NOT NULL,
     amount          INTEGER NOT NULL,          -- +/- credits
-    type            TEXT NOT NULL,             -- grant|monthly|topup|refund|reservation|reservation_release|adjustment
+    type            TEXT NOT NULL,             -- grant|monthly|topup|refund|reservation|reservation_release|reservation_overage|adjustment
     source          TEXT NOT NULL,             -- signup|admin|stripe|monthly|llm_request|reconcile
     reference_id    TEXT,                      -- reservation_id | payment_intent_id | request_id
     idempotency_key TEXT UNIQUE,               -- e.g. "stripe:pi_123", "monthly:u1:2026-08", "req:abc"

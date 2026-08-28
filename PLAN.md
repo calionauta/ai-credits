@@ -354,37 +354,43 @@ commit
 
 ### 6.2 Settle(r *Reservation, actualCredits)
 
-`actualCredits` é em CREDITS (não micro-units). Se o custo real exceder a
-reserva → `ErrReservationExceeded` (não cobra além do reservado).
+`actualCredits` é em CREDITS (não micro-units). Se o custo real EXCEDER a
+reserva, o excedente é **debitado do saldo disponível** (overage) — nunca
+recusa cobrar trabalho já consumido, e nunca limita silenciosamente o custo.
+Se o débito deixar o saldo negativo, o próximo `Reserve` falha (fail-closed /
+sinal de dunning — o saldo negativo é uma dívida a cobrar).
 
 ```
 tx:
   SELECT amount, status FROM credit_reservations WHERE id = ?   -- senão ErrReservationNotFound
   se status != 'reserved' → ErrReservationClosed
-  se actualCost > amount → ErrReservationExceeded (não cobrar além do reservado)
-  excess = amount - actualCost
-  UPDATE credit_reservations SET status='captured', captured_amount=actualCost,
-         released_amount=excess, updated_at=? WHERE id = ?
-  se excess > 0:
-    INSERT INTO credit_transactions (type='reservation_release', amount=+excess,
-      reference_id=reservation_id, ...)
-    UPDATE credit_accounts SET balance = balance + ? WHERE user_id = ?
+  se actualCost <= amount:
+    excess = amount - actualCost
+    se excess > 0:
+      INSERT INTO credit_transactions (type='reservation_release', amount=+excess, ...)
+      UPDATE credit_accounts SET balance = balance + ? WHERE user_id = ?
+  senão:  -- actualCost > amount (overage)
+    overage = actualCost - amount
+    INSERT INTO credit_transactions (type='reservation_overage', amount=-overage, ...)
+    UPDATE credit_accounts SET balance = balance - ? WHERE user_id = ?
+  UPDATE credit_reservations SET status='captured', captured_amount=actualCost, ... WHERE id = ?
 commit
 ```
 
 ### 6.3 Release(r *Reservation)
 
 Igual ao Settle com `actualCredits = 0` (ou caminho próprio que devolve `amount` inteiro,
-status='released').
+status='released'). Release nunca gera overage (cancela a chamada inteira).
 
 ### 6.3.1 Under-reserve (custo real > reserva) — política
 
-`EstimateMax` é conservador (margem 1.2× + ignora cache, que só reduz custo), então
-`ErrReservationExceeded` é raro, mas precisa de estratégia. O design NÃO permite cobrar
-além do reservado nem re-Reserve do mesmo `requestID` (idempotência). Mitigação do app:
-usar sufixo único no `requestID` por tentativa (ex. `req-abc-1`, `req-abc-2`) para que
-um retry possa `Release` a reserva curta e abrir uma nova com margem maior. O core da
-lib não muda (KISS); documentado aqui para os integradores.
+A lib **gera o overage automaticamente** no Settle (débito do excedente do saldo,
+§6.2) — nenhuma ação do app é necessária. `EstimateMax` é conservador (1.2×),
+então overage é raro; quando ocorre, o custo real é cobrado integralmente e o saldo
+pode ficar negativo (dívida). O app pode: (a) deixar a dívida pendente e cobrar depois
+(Stripe invoice/dunning), ou (b) fazer upgrade do plano para repor crédito. Se um app
+preferir NÃO permitir dívida, pode checar `Balance` antes de serve e recusar chamadas
+com saldo abaixo de um piso mínimo.
 
 ### 6.4 Política de reembolso (DECIDIDA — uma só)
 

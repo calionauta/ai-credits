@@ -137,10 +137,12 @@ func (s *Service) lookupReservation(ctx context.Context, tx *sql.Tx, requestID s
 	return &existing, nil
 }
 
-// Settle finalizes a reservation at the actual cost (in credits, <= Amount).
-// The excess reserved credits are returned to the balance via a ledger
-// reservation_release row. Settling for MORE than reserved is rejected with
-// ErrReservationExceeded — never silently clamped (critique G1/G2).
+// Settle finalizes a reservation at the actual cost. If the actual cost is
+// within the reserved amount, the unused reserve is returned to the balance
+// (ledger reservation_release). If it EXCEEDS the reserve, the full cost is
+// captured and the deficit is drawn from available balance as a
+// reservation_overage debit — never refusing to settle already-consumed work
+// (and never silently clamping the cost).
 func (s *Service) Settle(ctx context.Context, r *Reservation, actualCredits int64) error {
 	if r == nil {
 		return ErrReservationNotFound
@@ -188,8 +190,10 @@ func (s *Service) finalize(ctx context.Context, r *Reservation, captured int64, 
 	}
 
 	now := s.cfg.Now().Unix()
-	if out.returnAmt > 0 {
-		werr := s.writeReturn(ctx, tx, r, out.returnAmt, out.ledType, out.ledSource, now)
+	// One signed ledger adjustment: positive refunds unused reserve, negative
+	// debits an overage. Mutually exclusive by construction in outcome().
+	if out.adjust != 0 {
+		werr := s.writeReturn(ctx, tx, r, out.adjust, out.ledType, out.ledSource, now)
 		if werr != nil {
 			return werr
 		}
@@ -216,7 +220,8 @@ func (s *Service) finalize(ctx context.Context, r *Reservation, captured int64, 
 
 // outcome decides the settle/release result for a reservation.
 type outcome struct {
-	returnAmt int64
+	returnAmt int64 // refund of unused reserved credits (>=0); also released_amount
+	adjust    int64 // signed ledger amount: +returnAmt or -overage
 	status    string
 	ledType   string
 	ledSource string
@@ -224,20 +229,28 @@ type outcome struct {
 }
 
 func (s *Service) outcome(r *Reservation, captured int64, releaseAll bool) outcome {
-	if !releaseAll && captured > r.Amount {
-		return outcome{err: ErrReservationExceeded}
-	}
 	if r.Status != reservationStatusReserved {
 		return outcome{err: ErrReservationClosed}
 	}
 	if releaseAll {
 		return outcome{
-			returnAmt: r.Amount, status: reservationStatusReleased,
+			returnAmt: r.Amount, adjust: r.Amount,
+			status:  reservationStatusReleased,
 			ledType: "reservation_release", ledSource: "llm_cancel",
 		}
 	}
 	out := outcome{status: reservationStatusCaptured, ledType: "reservation_release", ledSource: "llm_settle"}
-	out.returnAmt = r.Amount - captured
+	if captured > r.Amount {
+		// Actual cost exceeded the reserve: capture the full cost and draw
+		// the deficit from available balance (overage), rather than refusing
+		// to settle already-consumed work. If the draw makes the balance
+		// negative, the next Reserve fail-closes (dunning/owed signal).
+		out.ledType = "reservation_overage"
+		out.adjust = -(captured - r.Amount)
+	} else {
+		out.returnAmt = r.Amount - captured
+		out.adjust = out.returnAmt
+	}
 	return out
 }
 

@@ -86,14 +86,49 @@ func TestSettleExceedsReservation(t *testing.T) {
 		t.Fatalf("Grant: %v", err)
 	}
 	rsv, _ := s.Reserve(ctx, testUser, "req-1", 100)
-	err := s.Settle(ctx, rsv, 200) // > reserved
-	if !errors.Is(err, ErrReservationExceeded) {
-		t.Fatalf("err = %v, want ErrReservationExceeded", err)
+
+	// Actual cost (200) exceeds the reserve (100): the full 200 is captured
+	// and the 100 deficit is drawn from available balance (overage). Balance
+	// drops by 200 total (100 reserved + 100 overage), never blocking
+	// already-consumed work.
+	if err := s.Settle(ctx, rsv, 200); err != nil {
+		t.Fatalf("Settle: %v", err)
 	}
-	// Reservation still open after a rejected settle.
 	bal, _ := s.Balance(ctx, testUser)
-	if bal != 900 {
-		t.Fatalf("balance = %d after rejected settle, want 900 (still reserved)", bal)
+	if bal != 800 {
+		t.Fatalf("balance = %d, want 800 (1000 - 200 actual cost)", bal)
+	}
+	if rsv.Status != reservationStatusCaptured {
+		t.Fatalf("status = %s, want captured", rsv.Status)
+	}
+	// Invariant: balance == SUM(ledger) must hold after the overage draw.
+	if ms, err := s.Reconcile(ctx); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	} else if len(ms) != 0 {
+		t.Fatalf("drift after overage: %+v", ms)
+	}
+}
+
+// Overage can push the balance negative; the next Reserve then fail-closes
+// (dunning signal) instead of silently allowing debt to run up.
+func TestSettleOverageGoesNegative(t *testing.T) {
+	s, cleanup := newTestService(t)
+	defer cleanup()
+	ctx := context.Background()
+	if err := s.Grant(ctx, testUser, 100, "signup", "w", "k1"); err != nil {
+		t.Fatalf("Grant: %v", err)
+	}
+	rsv, _ := s.Reserve(ctx, testUser, "req-1", 100)
+	if err := s.Settle(ctx, rsv, 300); err != nil { // over by 200
+		t.Fatalf("Settle: %v", err)
+	}
+	bal, _ := s.Balance(ctx, testUser)
+	if bal != -200 {
+		t.Fatalf("balance = %d, want -200 (overage drew into negative)", bal)
+	}
+	// Fail-closed: can't reserve more with a negative balance.
+	if _, err := s.Reserve(ctx, testUser, "req-2", 10); !errors.Is(err, ErrInsufficientCredits) {
+		t.Fatalf("Reserve err = %v, want ErrInsufficientCredits", err)
 	}
 }
 
