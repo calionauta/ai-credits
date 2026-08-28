@@ -2,12 +2,14 @@ package credits
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"time"
 )
 
 // ByokRelay is an in-process pass-through proxy for OpenAI-compatible
@@ -80,8 +82,14 @@ func (r *ByokRelay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Meter the call: wrap the writer to capture usage, persist after serving.
+	// Persist on a context detached from the request (WithoutCancel): a long
+	// SSE stream ends after the client has usually hung up, so the request ctx
+	// is cancelled by the time finish() writes llm_usage — which would silently
+	// drop the meter row. A short background timeout bounds the write.
+	meterCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	meter := &usageRW{
-		ResponseWriter: w, rel: r, ctx: req.Context(),
+		ResponseWriter: w, rel: r, ctx: meterCtx,
 		rec: Usage{
 			RequestID: newRequestIDForRelay(req), UserID: userID,
 			Provider: provider, Model: modelFromBody(req), BillingMode: billingModeByok,

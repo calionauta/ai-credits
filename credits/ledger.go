@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 )
 
 // getBalance returns the current materialized balance for a user.
@@ -19,21 +20,29 @@ func (s *Service) Balance(ctx context.Context, userID string) (int64, error) {
 }
 
 // Grant credits the user by amount, recording a ledger entry atomically with
-// the balance update inside a single transaction. Idempotent by idempotencyKey:
-// a duplicate key returns ErrDuplicateGrant and does not change the balance.
-// Grant never fails for a negative balance (see §6.4).
+// the balance update inside a single transaction. Idempotent by
+// idempotencyKey: a duplicate key returns ErrDuplicateGrant and does not
+// change the balance. Grant never fails for a negative balance (see §6.4).
+// amount must be > 0.
 func (s *Service) Grant(ctx context.Context, userID string, amount int64,
 	source, reason, idempotencyKey string,
 ) error {
+	if amount <= 0 {
+		return errors.New("credits: grant amount must be > 0")
+	}
 	return s.adjust(ctx, userID, amount, source, reason, idempotencyKey, "grant")
 }
 
 // Refund debits credits (reduces balance) by amount, same idempotent ledger
 // path as Grant, typed as a refund. Refund of already-spent credits may leave
-// a negative balance; the ledger records the fact (see §6.4).
+// a negative balance; the ledger records the fact (see §6.4). amount must be
+// > 0.
 func (s *Service) Refund(ctx context.Context, userID string, amount int64,
 	source, reason, idempotencyKey string,
 ) error {
+	if amount <= 0 {
+		return errors.New("credits: refund amount must be > 0")
+	}
 	return s.adjust(ctx, userID, -amount, source, reason, idempotencyKey, "refund")
 }
 

@@ -17,6 +17,33 @@ e o projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
   `(bool, error)`; novo `Credits(ctx, usage)`). Documentada a política de
   under-reserve (§6.3.1) e a mitigação no app.
 
+## [v0.4.0] - 2026-08-29
+
+### Fixed
+- **Money safety — double-refund guard**: `finalize` agora faz CAS no status
+  (`UPDATE … WHERE id=? AND status='reserved'` + `RowsAffected()==0`), então
+  um `Settle`/`Release` concorrente (ou repetido) não reembolsa duas vezes.
+- **Money safety — settle pelo valor do DB, não do struct do caller**: o
+  reembolso/overage é derivado da linha `credit_reservations` relida dentro
+  da write tx, não do `*Reservation` que o caller passa (imune a struct
+  adulterado/obsoleto).
+- **Write-lock determinístico**: `OpenSQLite` agora seta `_txlock=immediate`
+  no DSN. Antes a garantia de `BEGIN IMMEDIATE` dependia do driver (ncruces
+  honra `LevelSerializable`; modernc ignora — usava begin deferred). Com o
+  `_txlock` explícito, escritas concorrentes serializam no lock em qualquer
+  driver. Comentário de `immediateTx` reescrito (o antigo era falso p/ modernc).
+- **BYOK metering não é cancelado pelo hangup do cliente**: o registro de
+  `llm_usage` por SSE usa agora um contexto destacado da request
+  (`WithTimeout(Background, 10s)`), pois o ctx da request já está cancelado
+  quando um stream longo termina — a linha era descartada silenciosamente.
+- **Pricing aritmética inteira (sem float)**: `cost`, `Credits`, `EstimateMax`
+  e `creditsFromMicrounits` usam divisão inteira com arredondamento para cima
+  (`(a+b-1)/b`), eliminando erro de fronteira de float que podia subcobrar 1
+  crédito. `reserveMargin` virou fração inteira 6/5.
+- **Validação de `Grant`/`Refund`**: ambos rejeitam `amount <= 0` (só o
+  `adjust` interno aceita valor com sinal), travando um caller bugado/malicioso
+  que movimentava saldo negativo arbitrário.
+
 ## [v0.3.0] - 2026-08-28
 
 ### Changed
@@ -84,7 +111,8 @@ e o projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
   reconcile (detecção de drift + expiração de reservas obsoletas), store de
   credenciais BYOK (XChaCha20-Poly1305) + relay HTTP.
 
-[Unreleased]: https://github.com/calionauta/ai-credits/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/calionauta/ai-credits/compare/v0.4.0...HEAD
+[v0.4.0]: https://github.com/calionauta/ai-credits/releases/tag/v0.4.0
 [v0.3.0]: https://github.com/calionauta/ai-credits/releases/tag/v0.3.0
 [v0.2.0]: https://github.com/calionauta/ai-credits/releases/tag/v0.2.0
 [v0.1.1]: https://github.com/calionauta/ai-credits/releases/tag/v0.1.1

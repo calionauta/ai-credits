@@ -31,7 +31,8 @@ func EstimateTokens(s string) int {
 // sql.Open directly.
 func OpenSQLite(driverName, path string) (*sql.DB, error) {
 	dsn := "file:" + path +
-		"?_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)" +
+		"?_txlock=immediate" +
+		"&_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)" +
 		"&_pragma=journal_size_limit(200000000)&_pragma=synchronous(NORMAL)" +
 		"&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=cache_size(-32000)"
 	return sql.Open(driverName, dsn)

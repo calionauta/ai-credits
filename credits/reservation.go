@@ -163,10 +163,6 @@ func (s *Service) finalize(ctx context.Context, r *Reservation, captured int64, 
 	if !releaseAll && captured < 0 {
 		return errors.New("credits: negative capture")
 	}
-	out := s.outcome(r, captured, releaseAll)
-	if out.err != nil {
-		return out.err
-	}
 
 	tx, err := s.immediateTx(ctx)
 	if err != nil {
@@ -174,19 +170,12 @@ func (s *Service) finalize(ctx context.Context, r *Reservation, captured int64, 
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op after Commit
 
-	// Re-read the reservation under the tx to guard against a concurrent
-	// Settle/Release racing in.
-	var dbStatus string
-	err = tx.QueryRowContext(ctx,
-		`SELECT status FROM credit_reservations WHERE id = ?`, r.ID).Scan(&dbStatus)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ErrReservationNotFound
-	}
+	// Re-read the reservation under the tx both to guard against a concurrent
+	// Settle/Release racing in and to derive outcome from the authoritative
+	// DB row (not a stale/tampered caller struct).
+	out, err := s.loadOutcome(ctx, tx, r, captured, releaseAll)
 	if err != nil {
 		return err
-	}
-	if dbStatus != reservationStatusReserved {
-		return ErrReservationClosed
 	}
 
 	now := s.cfg.Now().Unix()
@@ -199,13 +188,18 @@ func (s *Service) finalize(ctx context.Context, r *Reservation, captured int64, 
 		}
 	}
 
-	_, err = tx.ExecContext(ctx,
+	// CAS on status: only flip when still reserved. RowsAffected()==0 means a
+	// concurrent Settle/Release/expiry already finalized it.
+	res, err := tx.ExecContext(ctx,
 		`UPDATE credit_reservations
 		    SET captured_amount = ?, released_amount = ?, status = ?, updated_at = ?
-		  WHERE id = ?`,
-		captured, out.returnAmt, out.status, now, r.ID)
+		  WHERE id = ? AND status = ?`,
+		captured, out.returnAmt, out.status, now, r.ID, reservationStatusReserved)
 	if err != nil {
 		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrReservationClosed
 	}
 	if err := tx.Commit(); err != nil {
 		return err
@@ -226,6 +220,33 @@ type outcome struct {
 	ledType   string
 	ledSource string
 	err       error
+}
+
+// loadOutcome re-reads the reservation from the DB inside the write tx and
+// computes the settle outcome from the AUTHORITATIVE row, not a stale or
+// tampered caller struct. It also detects concurrent finalization (status no
+// longer reserved).
+func (s *Service) loadOutcome(ctx context.Context, tx *sql.Tx, r *Reservation,
+	captured int64, releaseAll bool,
+) (outcome, error) {
+	var dbR Reservation
+	err := tx.QueryRowContext(ctx,
+		`SELECT id, user_id, request_id, amount, status FROM credit_reservations WHERE id = ?`,
+		r.ID).Scan(&dbR.ID, &dbR.UserID, &dbR.RequestID, &dbR.Amount, &dbR.Status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return outcome{}, ErrReservationNotFound
+	}
+	if err != nil {
+		return outcome{}, err
+	}
+	if dbR.Status != reservationStatusReserved {
+		return outcome{}, ErrReservationClosed
+	}
+	r.Amount = dbR.Amount
+	r.UserID = dbR.UserID
+	r.Status = dbR.Status
+	out := s.outcome(r, captured, releaseAll)
+	return out, out.err
 }
 
 func (s *Service) outcome(r *Reservation, captured int64, releaseAll bool) outcome {

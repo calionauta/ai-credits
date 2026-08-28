@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"math"
 )
 
 // microUnits per 1M tokens (micro-dollars). $0.15/1M → 150000.
@@ -34,8 +33,17 @@ var defaultModels = map[string]modelPrices{
 
 const defaultMicrounitsPerCredit = 1000 // 1 credit = $0.001
 
+// microUnitsPerMTok is 1_000_000: model prices are "per 1M tokens", token
+// counts are raw; dividing by this converts to micro-units.
+const microUnitsPerMTok int64 = 1_000_000
+
 // reserveMargin inflates EstimateMax over the nominal max cost (see §5.2).
-const reserveMargin = 1.2
+// Expressed as an integer fraction (6/5 = 1.2) to keep EstimateMax integer
+// arithmetic exact.
+const (
+	reserveMarginNum = 6
+	reserveMarginDen = 5
+)
 
 // pricerEngine is the pricing engine: a model table + microunits per credit.
 type pricerEngine struct {
@@ -72,16 +80,27 @@ func newPricer(r io.Reader, version string) (*pricerEngine, error) {
 }
 
 // cost computes cost in micro-units for the given token counts.
+// Integer arithmetic: cost = sum(token / 1e6 * perMtok). To avoid float
+// drift at the credit boundary we multiply tokens by perMtok first (exact
+// int64), then round up the division by 1e6.
 func (p *pricerEngine) cost(model string, input, output, cached, reasoning int64) (int64, error) {
 	m, ok := p.models[model]
 	if !ok {
 		return 0, ErrUnknownModel
 	}
-	mu := float64(input)/1e6*float64(m.InputPerMtok) +
-		float64(output)/1e6*float64(m.OutputPerMtok) +
-		float64(cached)/1e6*float64(m.CachedInputPerMtok) +
-		float64(reasoning)/1e6*float64(m.ReasoningPerMtok)
-	return int64(math.Ceil(mu)), nil
+	mu := intDivCeil(input*m.InputPerMtok, microUnitsPerMTok) +
+		intDivCeil(output*m.OutputPerMtok, microUnitsPerMTok) +
+		intDivCeil(cached*m.CachedInputPerMtok, microUnitsPerMTok) +
+		intDivCeil(reasoning*m.ReasoningPerMtok, microUnitsPerMTok)
+	return mu, nil
+}
+
+// intDivCeil returns ceil(a/b) for b > 0 using integer arithmetic (no float).
+func intDivCeil(a, b int64) int64 {
+	if a <= 0 {
+		return 0
+	}
+	return (a + b - 1) / b
 }
 
 // Cost returns the estimated cost (in micro-units) of a Usage.
@@ -92,12 +111,15 @@ func (s *Service) Cost(ctx context.Context, u Usage) (int64, error) {
 		int64(u.CachedTokens), int64(u.ReasoningTokens))
 }
 
-// credits converts micro-units to credits, rounding up.
+// credits converts micro-units to credits, rounding up (integer, no float).
 func creditsFromMicrounits(mu, perCredit int64) int64 {
 	if perCredit <= 0 {
 		perCredit = defaultMicrounitsPerCredit
 	}
-	return int64(math.Ceil(float64(mu) / float64(perCredit)))
+	if mu <= 0 {
+		return 0
+	}
+	return (mu + perCredit - 1) / perCredit
 }
 
 // Credits converts a Usage into whole credits.
@@ -120,9 +142,10 @@ func (s *Service) EstimateMax(ctx context.Context, model string,
 	if !ok {
 		return 0, ErrUnknownModel
 	}
-	mu := float64(inputTokens)/1e6*float64(m.InputPerMtok) +
-		float64(maxOutputTokens)/1e6*float64(m.OutputPerMtok)
-	mu = math.Ceil(mu * reserveMargin)
-	credits := creditsFromMicrounits(int64(mu), s.pricer.microunitsPerCredit)
+	mu := intDivCeil(int64(inputTokens)*m.InputPerMtok, microUnitsPerMTok) +
+		intDivCeil(int64(maxOutputTokens)*m.OutputPerMtok, microUnitsPerMTok)
+	// Scale by the reserve margin, rounding up; integer-only.
+	mu = intDivCeil(mu*reserveMarginNum, reserveMarginDen)
+	credits := creditsFromMicrounits(mu, s.pricer.microunitsPerCredit)
 	return max(credits, int64(1)), nil
 }

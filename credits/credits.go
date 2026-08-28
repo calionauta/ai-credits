@@ -53,11 +53,18 @@ func New(db *sql.DB, cfg Config) (*Service, error) {
 	return s, nil
 }
 
-// immediateTx begins a SERIALIZABLE transaction, which modernc.org/sqlite maps
-// to BEGIN IMMEDIATE — acquiring the SQLite write lock up front. Deferred
-// transactions upgrade to write mid-tx and cause SQLITE_BUSY deadlocks under
-// concurrency; immediate serializes writers on the lock. Every write path in
-// this package uses a write transaction through this helper.
+// immediateTx begins a write transaction. To get a true BEGIN IMMEDIATE
+// (acquiring the SQLite write lock up front, so concurrent writers serialize
+// instead of deadlocking with SQLITE_BUSY when a deferred tx upgrades mid-tx)
+// the guarantee must come from the DSN, not from an isolation constant:
+//   - modernc.org/sqlite: a non-empty DSN `_txlock=` sets beginMode; by itself
+//     LevelSerializable does NOT imply BEGIN IMMEDIATE here.
+//   - ncruces/go-sqlite3: maps LevelSerializable to "immediate".
+//
+// OpenSQLite sets `_txlock=immediate`, making the guarantee driver-independent
+// for the app-facing entry point. Callers that pass their own *sql.DB must
+// ensure their DSN sets _txlock=immediate (or an equivalent) — the isolation
+// constant alone is not relied upon here.
 func (s *Service) immediateTx(ctx context.Context) (*sql.Tx, error) {
 	return s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 }

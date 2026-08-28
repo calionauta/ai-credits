@@ -249,3 +249,76 @@ func TestReserveConcurrency(t *testing.T) {
 		t.Fatalf("invariant broken: balance=%d sum=%d", bal, sum)
 	}
 }
+
+// A second Settle on an already-settled reservation must be refused (CAS on
+// status) — otherwise the unused reserve could be refunded twice.
+func TestSettleTwiceDoesNotDoubleRefund(t *testing.T) {
+	s, cleanup := newTestService(t)
+	defer cleanup()
+	ctx := context.Background()
+	if err := s.Grant(ctx, testUser, 1000, "signup", "w", "k1"); err != nil {
+		t.Fatalf("Grant: %v", err)
+	}
+	rsv, err := s.Reserve(ctx, testUser, "req-1", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Settle(ctx, rsv, 40); err != nil {
+		t.Fatalf("first Settle: %v", err)
+	}
+	bal, _ := s.Balance(ctx, testUser)
+	if bal != 960 {
+		t.Fatalf("balance after first settle = %d, want 960", bal)
+	}
+	// Second settle on the same (now captured) reservation must be refused.
+	if err := s.Settle(ctx, rsv, 40); !errors.Is(err, ErrReservationClosed) {
+		t.Fatalf("second Settle err = %v, want ErrReservationClosed (no double refund)", err)
+	}
+	if bal2, _ := s.Balance(ctx, testUser); bal2 != 960 {
+		t.Fatalf("balance after double settle = %d, want 960 (unchanged)", bal2)
+	}
+}
+
+// Settle must derive the refund from the DB row's amount, not a tampered
+// caller struct (e.g. upsizing r.Amount to steal a bigger refund).
+func TestSettleIgnoresTamperedStruct(t *testing.T) {
+	s, cleanup := newTestService(t)
+	defer cleanup()
+	ctx := context.Background()
+	if err := s.Grant(ctx, testUser, 1000, "signup", "w", "k1"); err != nil {
+		t.Fatalf("Grant: %v", err)
+	}
+	rsv, err := s.Reserve(ctx, testUser, "req-1", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Tamper: claim the reserve was 500 (refund would be 500-40=460 instead
+	// of the real 60). The DB row says 100, so only 60 is refunded.
+	rsv.Amount = 500
+	if err := s.Settle(ctx, rsv, 40); err != nil {
+		t.Fatalf("Settle: %v", err)
+	}
+	bal, _ := s.Balance(ctx, testUser)
+	if bal != 960 {
+		t.Fatalf("balance = %d, want 960 (refund from DB amount 100, not tampered 500)", bal)
+	}
+}
+
+func TestGrantRejectsNonPositive(t *testing.T) {
+	s, cleanup := newTestService(t)
+	defer cleanup()
+	ctx := context.Background()
+	if err := s.Grant(ctx, testUser, 0, "signup", "w", "k1"); err == nil {
+		t.Fatal("Grant(0) should fail")
+	}
+	if err := s.Grant(ctx, testUser, -100, "signup", "w", "k2"); err == nil {
+		t.Fatal("Grant(-100) should fail")
+	}
+	if err := s.Refund(ctx, testUser, 0, "admin", "r", "k3"); err == nil {
+		t.Fatal("Refund(0) should fail")
+	}
+	// Balance unchanged by rejected calls.
+	if bal, _ := s.Balance(ctx, testUser); bal != 0 {
+		t.Fatalf("balance = %d, want 0", bal)
+	}
+}
