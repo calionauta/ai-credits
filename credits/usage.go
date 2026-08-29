@@ -3,7 +3,28 @@ package credits
 import (
 	"context"
 	"strings"
+	"time"
 )
+
+// RecordUsageRetry records usage and retries transient SQLite contention. Billing
+// callers should use it after a successful settle: the ledger stays canonical,
+// while this bounded retry preserves the audit trail under a busy sibling DB
+// connection such as PocketBase.
+func (s *Service) RecordUsageRetry(ctx context.Context, u Usage) error {
+	const attempts = 3
+	for attempt := range attempts {
+		err := s.RecordUsage(ctx, u)
+		if err == nil || !isBusyError(err) || attempt == attempts-1 {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(attempt+1) * 25 * time.Millisecond):
+		}
+	}
+	return nil
+}
 
 // RecordUsage persists a single LLM call into the llm_usage table. It is
 // append-only and keyed by request_id (unique). Pricing version and computed
@@ -44,8 +65,10 @@ func (s *Service) RecordUsage(ctx context.Context, u Usage) error {
 }
 
 func isUniqueViolation(err error) bool {
-	if err == nil {
-		return false
-	}
-	return strings.Contains(err.Error(), "UNIQUE constraint failed")
+	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
+}
+
+func isBusyError(err error) bool {
+	return err != nil && (strings.Contains(err.Error(), "database is locked") ||
+		strings.Contains(err.Error(), "database is busy"))
 }

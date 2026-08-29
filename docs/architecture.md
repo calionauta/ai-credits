@@ -209,9 +209,10 @@ to the monthly grant (entitlement), not to already-granted balances.
   5. **Metering**: wraps the response with `usageRW`, which replays bytes
      untouched and, at the end, extracts the OpenAI-compatible usage (JSON
      non-stream OR the final `data: {…usage…}` chunk before `[DONE]`) and writes
-     an `llm_usage` row (`billing_mode=byok`, `credits_charged=0`). Model read
-     from body (best-effort); request id from inbound `X-Byok-Request-Id`
-     (`byok:<id>`, idempotent) or a fresh one.
+     an `llm_usage` row (`billing_mode=byok`, `credits_charged=0`). JSON capture
+     is bounded to 1 MiB; SSE parsing retains only the current event line, so a
+     long stream cannot grow memory. Model read from body (best-effort); request
+     id from inbound `X-Byok-Request-Id` (`byok:<id>`, idempotent) or a fresh one.
 
 ### Identity
 
@@ -246,6 +247,10 @@ Trust boundaries and known ceilings, revisited on demand:
   Grant, Reserve → Settle, lazy monthly); no multi-step flow justifies it.
 - **Streaming settles at end** — usage is recorded when the stream finishes
   (`TotalUsage` arrives on the final chunk); no incremental pre-charge.
+- **Usage audit is separate from money settlement** — a provider call cannot
+  share a transaction with SQLite. `RecordUsageRetry` makes bounded retries for
+  SQLite contention; callers surface the stable request id if audit persistence
+  still fails, so it can be repaired idempotently.
 
 ## Out of scope (v1) / future
 

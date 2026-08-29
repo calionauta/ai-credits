@@ -76,7 +76,9 @@ func main() {
 	if err := svc.Settle(ctx, rsv, creditsUsed); err != nil {
 		log.Fatal(err)
 	}
-	svc.RecordUsage(ctx, usage)
+	if err := svc.RecordUsageRetry(ctx, usage); err != nil {
+		log.Printf("usage audit pending for req-1: %v", err)
+	}
 
 	fmt.Println("balance:", must(svc.Balance(ctx, user)))
 }

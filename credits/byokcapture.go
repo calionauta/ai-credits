@@ -7,35 +7,71 @@ import (
 	"net/http"
 )
 
-// BYOK relay usage metering (audit gap: BYOK calls were invisible to
-// llm_usage analytics). OpenAI-compatible endpoints return usage in the
-// response:
-//   - non-streaming: a top-level "usage" object in the JSON body
-//   - streaming:      the final "data: {json}" chunk carries "usage",
-//     right before "data: [DONE]"
-//
-// usageCapturingRW wraps the response writer, echoing every byte through,
-// and on completion extracts usage and persists an llm_usage row with
-// billing_mode=byok and credits_charged=0 (BYOK is pass-through; the user
-// pays their own provider, we only meter the call).
+// maxUsageCaptureBytes bounds response buffering in the BYOK relay. JSON
+// responses need their full body for parsing; SSE responses keep only the
+// current event line, so long streams do not accumulate in memory.
+const maxUsageCaptureBytes = 1 << 20
 
-// usageRW is a ResponseWriter that passes through untouched and captures the
-// body so usage can be parsed at the end (both JSON and SSE forms). The ctx
-// field threads the request context to the async finish() persistence step.
+// usageRW passes bytes through unchanged while extracting OpenAI-compatible
+// usage at the end of a non-streaming JSON body or from SSE event lines.
 //
-//nolint:containedctx // ResponseWriter wrapper; ctx belongs to the proxied request it wraps.
+//nolint:containedctx // ResponseWriter wrapper owns a bounded persistence context.
 type usageRW struct {
 	http.ResponseWriter
-	rel  *ByokRelay
-	rec  Usage
-	ctx  context.Context
-	buf  bytes.Buffer
-	done bool
+	rel *ByokRelay
+	rec Usage
+	ctx context.Context
+
+	body   bytes.Buffer
+	line   bytes.Buffer
+	usage  *openaiUsage
+	stream bool
+	done   bool
 }
 
 func (u *usageRW) Write(p []byte) (int, error) {
-	u.buf.Write(p) // capture for usage parse
+	u.capture(p)
 	return u.ResponseWriter.Write(p)
+}
+
+func (u *usageRW) capture(p []byte) {
+	if !u.stream {
+		if u.body.Len()+len(p) <= maxUsageCaptureBytes {
+			_, _ = u.body.Write(p)
+		}
+		return
+	}
+	for len(p) > 0 {
+		i := bytes.IndexByte(p, '\n')
+		if i < 0 {
+			u.appendLine(p)
+			return
+		}
+		u.appendLine(p[:i])
+		u.parseLine()
+		u.line.Reset()
+		p = p[i+1:]
+	}
+}
+
+func (u *usageRW) appendLine(p []byte) {
+	if u.line.Len()+len(p) <= maxUsageCaptureBytes {
+		_, _ = u.line.Write(p)
+	}
+}
+
+func (u *usageRW) parseLine() {
+	line := bytes.TrimSpace(u.line.Bytes())
+	if !bytes.HasPrefix(line, []byte("data:")) {
+		return
+	}
+	payload := bytes.TrimSpace(line[len("data:"):])
+	var chunk struct {
+		Usage *openaiUsage `json:"usage"`
+	}
+	if json.Unmarshal(payload, &chunk) == nil && chunk.Usage != nil {
+		u.usage = chunk.Usage
+	}
 }
 
 func (u *usageRW) Flush() {
@@ -48,8 +84,6 @@ func (u *usageRW) WriteHeader(code int) {
 	u.ResponseWriter.WriteHeader(code)
 }
 
-// finish parses usage from the captured stream and records it once. The
-// relay calls it after the proxied request completes.
 func (u *usageRW) finish() {
 	if u.done {
 		return
@@ -70,40 +104,17 @@ type openaiUsage struct {
 	} `json:"prompt_tokens_details"`
 }
 
-func parseUsage(body []byte) *openaiUsage {
-	// Non-streaming: the whole body is one JSON object with "usage".
-	var whole struct {
-		Usage *openaiUsage `json:"usage"`
-	}
-	if err := json.Unmarshal(body, &whole); err == nil && whole.Usage != nil {
-		return whole.Usage
-	}
-	// Streaming: walk "data: {json}" lines; keep the last one that has usage.
-	var last *openaiUsage
-	for ln := range bytes.SplitSeq(body, []byte("\n")) {
-		s := bytes.TrimSpace(ln)
-		if !bytes.HasPrefix(s, []byte("data:")) {
-			continue
-		}
-		payload := bytes.TrimSpace(s[len("data:"):])
-		if bytes.Equal(payload, []byte("[DONE]")) {
-			break
-		}
-		var chunk struct {
+func (u *usageRW) recordUsage() error {
+	usage := u.usage
+	if !u.stream {
+		var whole struct {
 			Usage *openaiUsage `json:"usage"`
 		}
-		if err := json.Unmarshal(payload, &chunk); err == nil && chunk.Usage != nil {
-			last = chunk.Usage
+		if json.Unmarshal(u.body.Bytes(), &whole) == nil {
+			usage = whole.Usage
 		}
 	}
-	return last
-}
-
-// recordUsage parses the captured body and writes the llm_usage row.
-func (u *usageRW) recordUsage() error {
-	usage := parseUsage(u.buf.Bytes())
 	if usage == nil {
-		// No usage in the response (e.g. error body) — nothing to meter.
 		return nil
 	}
 	rec := u.rec
@@ -115,7 +126,7 @@ func (u *usageRW) recordUsage() error {
 	if usage.PromptTokensDetails != nil {
 		rec.CachedTokens = usage.PromptTokensDetails.CachedTokens
 	}
-	return u.rel.svc.RecordUsage(u.ctx, rec)
+	return u.rel.svc.RecordUsageRetry(u.ctx, rec)
 }
 
 var (

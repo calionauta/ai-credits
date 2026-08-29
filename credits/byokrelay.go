@@ -81,18 +81,21 @@ func (r *ByokRelay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		ErrorLog: errLogger,
 	}
 
+	// Read the request body once before proxying: it provides the model and
+	// determines whether the response is an SSE stream, avoiding any response
+	// buffering heuristic.
+	model, stream := modelFromBody(req)
+
 	// Meter the call: wrap the writer to capture usage, persist after serving.
-	// Persist on a context detached from the request (WithoutCancel): a long
-	// SSE stream ends after the client has usually hung up, so the request ctx
-	// is cancelled by the time finish() writes llm_usage — which would silently
-	// drop the meter row. A short background timeout bounds the write.
+	// Persist on a detached, bounded context because client cancellation often
+	// happens before a long SSE stream finishes.
 	meterCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	meter := &usageRW{
-		ResponseWriter: w, rel: r, ctx: meterCtx,
+		ResponseWriter: w, rel: r, ctx: meterCtx, stream: stream,
 		rec: Usage{
 			RequestID: newRequestIDForRelay(req), UserID: userID,
-			Provider: provider, Model: modelFromBody(req), BillingMode: billingModeByok,
+			Provider: provider, Model: model, BillingMode: billingModeByok,
 		},
 	}
 	proxy.ServeHTTP(meter, req)
@@ -114,15 +117,15 @@ func newRequestIDForRelay(req *http.Request) string {
 // `stream_options.include_usage=true` so the provider returns usage in the
 // final SSE chunk (otherwise the relay's streaming metering sees nothing).
 // Best effort: parse failures or non-JSON bodies are passed through intact.
-func modelFromBody(req *http.Request) string {
+func modelFromBody(req *http.Request) (string, bool) {
 	if req.Body == nil {
-		return ""
+		return "", false
 	}
 	body, err := io.ReadAll(req.Body)
 	req.Body.Close()
 	if err != nil {
 		req.Body = io.NopCloser(bytes.NewReader(nil))
-		return ""
+		return "", false
 	}
 
 	var v struct {
@@ -152,5 +155,5 @@ func modelFromBody(req *http.Request) string {
 	// body is longer than the original (include_usage added), keep it in sync
 	// or upstream truncates at the stale length.
 	req.ContentLength = int64(len(body))
-	return v.Model
+	return v.Model, v.Stream != nil && *v.Stream
 }
