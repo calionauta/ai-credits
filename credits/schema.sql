@@ -57,7 +57,7 @@ CREATE INDEX IF NOT EXISTS idx_llm_usage_model ON llm_usage(model);
 CREATE TABLE IF NOT EXISTS byok_credentials (
     user_id       TEXT NOT NULL,
     provider      TEXT NOT NULL,               -- "openai"|"openrouter"|... (key of provider map)
-    encrypted_key BLOB NOT NULL,               -- base64(XChaCha20-Poly1305(apiKey))
+    encrypted_key BLOB NOT NULL,               -- nonce || XChaCha20-Poly1305(apiKey)
     created_at    INTEGER NOT NULL,
     updated_at    INTEGER NOT NULL,
     PRIMARY KEY (user_id, provider)

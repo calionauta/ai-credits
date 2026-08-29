@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS credit_transactions (
     id              TEXT PRIMARY KEY,          -- hex crypto/rand 16 bytes
     user_id         TEXT NOT NULL,
     amount          INTEGER NOT NULL,          -- +/- credits
-    type            TEXT NOT NULL,             -- grant|monthly|topup|refund|reservation|reservation_release|adjustment
+    type            TEXT NOT NULL,             -- grant|monthly|topup|refund|reservation|reservation_release|reservation_overage|adjustment
     source          TEXT NOT NULL,             -- signup|admin|stripe|monthly|llm_request|reconcile
     reference_id    TEXT,                      -- reservation_id | payment_intent_id | request_id
     idempotency_key TEXT UNIQUE,               -- e.g. "stripe:pi_123", "monthly:u1:2026-08"
@@ -76,10 +76,18 @@ CREATE INDEX IF NOT EXISTS idx_llm_usage_model ON llm_usage(model);
 CREATE TABLE IF NOT EXISTS byok_credentials (
     user_id       TEXT NOT NULL,
     provider      TEXT NOT NULL,               -- key of the provider->base map
-    encrypted_key BLOB NOT NULL,               -- base64(XChaCha20-Poly1305(apiKey))
+    encrypted_key BLOB NOT NULL,               -- nonce || XChaCha20-Poly1305(apiKey)
     created_at    INTEGER NOT NULL,
     updated_at    INTEGER NOT NULL,
     PRIMARY KEY (user_id, provider)
+);
+
+CREATE TABLE IF NOT EXISTS subscriptions (
+    user_id    TEXT PRIMARY KEY,
+    plan       TEXT NOT NULL,                  -- key used in PlanMonthlyCredits
+    status     TEXT NOT NULL,                  -- active|cancelled|paused
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
 );
 ```
 
