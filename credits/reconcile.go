@@ -106,10 +106,14 @@ func (s *Service) expireOne(ctx context.Context, id, userID string, amount, now 
 // arithmetic sum of its ledger rows and reports any mismatch.
 func (s *Service) detectDrift(ctx context.Context) ([]Mismatch, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT a.user_id, a.balance,
+		`WITH users AS (
+		   SELECT user_id FROM credit_accounts
+		   UNION SELECT user_id FROM credit_transactions
+		 )
+		 SELECT u.user_id, COALESCE(a.balance, 0),
 		        COALESCE((SELECT SUM(t.amount) FROM credit_transactions t
-		                   WHERE t.user_id = a.user_id), 0) AS ledger_sum
-		   FROM credit_accounts a`)
+		                   WHERE t.user_id = u.user_id), 0) AS ledger_sum
+		   FROM users u LEFT JOIN credit_accounts a ON a.user_id = u.user_id`)
 	if err != nil {
 		return nil, err
 	}

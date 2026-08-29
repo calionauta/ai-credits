@@ -34,6 +34,8 @@ CREATE TABLE IF NOT EXISTS credit_reservations (
     updated_at      INTEGER NOT NULL
 );
 
+CREATE INDEX IF NOT EXISTS idx_credit_reservations_stale ON credit_reservations(status, created_at);
+
 CREATE TABLE IF NOT EXISTS llm_usage (
     id                        TEXT PRIMARY KEY,
     request_id                TEXT UNIQUE NOT NULL,

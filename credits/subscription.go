@@ -33,6 +33,12 @@ type Subscription struct {
 // plan is set to anything other than active, the monthly grant gate blocks
 // new credits (existing balance is untouched and reusable).
 func (s *Service) SetSubscription(ctx context.Context, userID, plan, status string) error {
+	if err := requireIdentifier("user_id", userID); err != nil {
+		return err
+	}
+	if err := requireIdentifier("plan", plan); err != nil {
+		return err
+	}
 	switch status {
 	case SubscriptionActive, SubscriptionPaused, SubscriptionCanceled:
 	default:

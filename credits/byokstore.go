@@ -25,7 +25,16 @@ func (c *CredentialStore) Put(ctx context.Context, userID, provider, cred string
 	if !c.keyed() {
 		return ErrCredentialStoreDisabled
 	}
-	sealed, err := c.seal(cred)
+	if err := requireIdentifier("user_id", userID); err != nil {
+		return err
+	}
+	if err := requireIdentifier("provider", provider); err != nil {
+		return err
+	}
+	if cred == "" {
+		return errors.New("credits: credential is required")
+	}
+	sealed, err := c.seal(cred, []byte(userID+"\x00"+provider))
 	if err != nil {
 		return err
 	}
@@ -53,7 +62,7 @@ func (c *CredentialStore) Get(ctx context.Context, userID, provider string) (str
 	if err != nil {
 		return "", err
 	}
-	return c.open(sealed)
+	return c.open(sealed, []byte(userID+"\x00"+provider))
 }
 
 func (c *CredentialStore) Delete(ctx context.Context, userID, provider string) error {
@@ -81,7 +90,7 @@ func (c *CredentialStore) keyed() bool {
 	return c.blob != [32]byte{}
 }
 
-func (c *CredentialStore) seal(cred string) ([]byte, error) {
+func (c *CredentialStore) seal(cred string, aad []byte) ([]byte, error) {
 	aead, err := chacha20poly1305.NewX(c.blob[:])
 	if err != nil {
 		return nil, err
@@ -90,10 +99,10 @@ func (c *CredentialStore) seal(cred string) ([]byte, error) {
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, err
 	}
-	return aead.Seal(nonce, nonce, []byte(cred), nil), nil
+	return aead.Seal(nonce, nonce, []byte(cred), aad), nil
 }
 
-func (c *CredentialStore) open(sealed []byte) (string, error) {
+func (c *CredentialStore) open(sealed, aad []byte) (string, error) {
 	aead, err := chacha20poly1305.NewX(c.blob[:])
 	if err != nil {
 		return "", err
@@ -104,7 +113,7 @@ func (c *CredentialStore) open(sealed []byte) (string, error) {
 	}
 	nonce := sealed[:chacha20poly1305.NonceSizeX]
 	ct := sealed[chacha20poly1305.NonceSizeX:]
-	pt, err := aead.Open(nil, nonce, ct, nil)
+	pt, err := aead.Open(nil, nonce, ct, aad)
 	if err != nil {
 		return "", errors.Join(ErrCredentialDecrypt, err)
 	}

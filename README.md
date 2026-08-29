@@ -140,5 +140,6 @@ BYOK calls are visible to analytics/throttling without charging the user.
 
 Design reference (schema, pricing, domain rules, BYOK relay, security,
 deliberate simplifications): [`docs/architecture.md`](docs/architecture.md).
+Optional provider-neutral payments and Stripe integration: [`docs/payments.md`](docs/payments.md).
 
 - [MIT](./LICENSE)

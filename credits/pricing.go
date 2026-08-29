@@ -3,7 +3,9 @@ package credits
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"math"
 )
 
 // microUnits per 1M tokens (micro-dollars). $0.15/1M → 150000.
@@ -88,11 +90,24 @@ func (p *pricerEngine) cost(model string, input, output, cached, reasoning int64
 	if !ok {
 		return 0, ErrUnknownModel
 	}
-	mu := intDivCeil(input*m.InputPerMtok, microUnitsPerMTok) +
-		intDivCeil(output*m.OutputPerMtok, microUnitsPerMTok) +
-		intDivCeil(cached*m.CachedInputPerMtok, microUnitsPerMTok) +
-		intDivCeil(reasoning*m.ReasoningPerMtok, microUnitsPerMTok)
-	return mu, nil
+	values := [][2]int64{{input, m.InputPerMtok}, {output, m.OutputPerMtok}, {cached, m.CachedInputPerMtok}, {reasoning, m.ReasoningPerMtok}}
+	var numerator int64
+	for _, value := range values {
+		if value[0] < 0 || value[1] < 0 || (value[0] != 0 && value[1] > math.MaxInt64/value[0]) {
+			return 0, errors.New("credits: pricing overflow or negative token count")
+		}
+		product := value[0] * value[1]
+		if numerator > math.MaxInt64-product {
+			return 0, errors.New("credits: pricing overflow")
+		}
+		numerator += product
+	}
+	return intDivCeil(numerator, microUnitsPerMTok), nil
+}
+
+func pCost(m modelPrices, input, output int64) (int64, error) {
+	p := &pricerEngine{models: map[string]modelPrices{"estimate": m}}
+	return p.cost("estimate", input, output, 0, 0)
 }
 
 // intDivCeil returns ceil(a/b) for b > 0 using integer arithmetic (no float).
@@ -138,13 +153,21 @@ func (s *Service) EstimateMax(ctx context.Context, model string,
 	inputTokens, maxOutputTokens int,
 ) (int64, error) {
 	_ = ctx // ctx kept for API consistency (PLAN §3).
+	if inputTokens < 0 || maxOutputTokens < 0 {
+		return 0, errors.New("credits: token counts must be non-negative")
+	}
 	m, ok := s.pricer.models[model]
 	if !ok {
 		return 0, ErrUnknownModel
 	}
-	mu := intDivCeil(int64(inputTokens)*m.InputPerMtok, microUnitsPerMTok) +
-		intDivCeil(int64(maxOutputTokens)*m.OutputPerMtok, microUnitsPerMTok)
+	mu, err := pCost(m, int64(inputTokens), int64(maxOutputTokens))
+	if err != nil {
+		return 0, err
+	}
 	// Scale by the reserve margin, rounding up; integer-only.
+	if mu > math.MaxInt64/reserveMarginNum {
+		return 0, errors.New("credits: reserve estimate overflow")
+	}
 	mu = intDivCeil(mu*reserveMarginNum, reserveMarginDen)
 	credits := creditsFromMicrounits(mu, s.pricer.microunitsPerCredit)
 	return max(credits, int64(1)), nil

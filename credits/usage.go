@@ -30,6 +30,9 @@ func (s *Service) RecordUsageRetry(ctx context.Context, u Usage) error {
 // append-only and keyed by request_id (unique). Pricing version and computed
 // cost are captured at call time for later audit.
 func (s *Service) RecordUsage(ctx context.Context, u Usage) error {
+	if err := validateUsage(u); err != nil {
+		return err
+	}
 	if u.CreatedAt.IsZero() {
 		u.CreatedAt = s.cfg.Now()
 	}
@@ -55,8 +58,8 @@ func (s *Service) RecordUsage(ctx context.Context, u Usage) error {
 		u.InputTokens, u.OutputTokens, u.CachedTokens, u.ReasoningTokens,
 		est, actual, u.CreditsCharged, version, u.CreatedAt.Unix())
 	if err != nil {
-		// request_id UNIQUE: a duplicate call report is ignored (idempotent).
-		if isUniqueViolation(err) {
+		// request_id UNIQUE: only its expected constraint conflict is idempotent.
+		if isUsageRequestDuplicate(err) {
 			return nil
 		}
 		return err
@@ -64,8 +67,8 @@ func (s *Service) RecordUsage(ctx context.Context, u Usage) error {
 	return nil
 }
 
-func isUniqueViolation(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
+func isUsageRequestDuplicate(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed: llm_usage.request_id")
 }
 
 func isBusyError(err error) bool {

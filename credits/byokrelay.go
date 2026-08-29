@@ -42,6 +42,10 @@ func (s *Service) NewByokRelay(stores *CredentialStore, bases map[string]string,
 // ServeHTTP proxies the request to the configured provider base with the
 // user's stored credential injected as the bearer token.
 func (r *ByokRelay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	provider, rest := splitPath(req.URL.Path)
 	if provider == "" {
 		http.Error(w, "provider required", http.StatusBadRequest)
@@ -53,6 +57,10 @@ func (r *ByokRelay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	userID := req.Header.Get("X-Auth-User")
+	if err := requireIdentifier("X-Auth-User", userID); err != nil {
+		http.Error(w, "authenticated user required", http.StatusUnauthorized)
+		return
+	}
 	cred, err := r.stores.Get(req.Context(), userID, provider)
 	if err != nil {
 		http.Error(w, "credential not configured", http.StatusNotFound)
@@ -60,7 +68,7 @@ func (r *ByokRelay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	target, err := url.Parse(base)
-	if err != nil {
+	if err != nil || target.Scheme != "https" && target.Scheme != "http" || target.Host == "" {
 		http.Error(w, "bad provider base", http.StatusInternalServerError)
 		return
 	}
@@ -117,13 +125,15 @@ func newRequestIDForRelay(req *http.Request) string {
 // `stream_options.include_usage=true` so the provider returns usage in the
 // final SSE chunk (otherwise the relay's streaming metering sees nothing).
 // Best effort: parse failures or non-JSON bodies are passed through intact.
+const maxByokRequestBytes = 1 << 20
+
 func modelFromBody(req *http.Request) (string, bool) {
 	if req.Body == nil {
 		return "", false
 	}
-	body, err := io.ReadAll(req.Body)
+	body, err := io.ReadAll(io.LimitReader(req.Body, maxByokRequestBytes+1))
 	req.Body.Close()
-	if err != nil {
+	if err != nil || len(body) > maxByokRequestBytes {
 		req.Body = io.NopCloser(bytes.NewReader(nil))
 		return "", false
 	}

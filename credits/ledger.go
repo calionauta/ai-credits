@@ -51,6 +51,13 @@ func (s *Service) Refund(ctx context.Context, userID string, amount int64,
 func (s *Service) adjust(ctx context.Context, userID string, amount int64,
 	source, reason, idempotencyKey, typ string,
 ) error {
+	for name, value := range map[string]string{
+		"user_id": userID, "source": source, "reason": reason, "idempotency_key": idempotencyKey,
+	} {
+		if err := requireIdentifier(name, value); err != nil {
+			return err
+		}
+	}
 	tx, err := s.immediateTx(ctx)
 	if err != nil {
 		return err

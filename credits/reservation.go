@@ -35,6 +35,12 @@ type Reservation struct {
 // (not merely < amount), matching the "balance can go negative only via
 // grant/refund" rule.
 func (s *Service) Reserve(ctx context.Context, userID, requestID string, amount int64) (*Reservation, error) {
+	if err := requireIdentifier("user_id", userID); err != nil {
+		return nil, err
+	}
+	if err := requireIdentifier("request_id", requestID); err != nil {
+		return nil, err
+	}
 	if amount < 1 {
 		return nil, errors.New("credits: reservation amount must be >= 1")
 	}

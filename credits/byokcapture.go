@@ -35,6 +35,10 @@ func (u *usageRW) Write(p []byte) (int, error) {
 }
 
 func (u *usageRW) capture(p []byte) {
+	if !u.stream && bytes.HasPrefix(bytes.TrimSpace(p), []byte("data:")) {
+		u.stream = true
+		u.body.Reset()
+	}
 	if !u.stream {
 		if u.body.Len()+len(p) <= maxUsageCaptureBytes {
 			_, _ = u.body.Write(p)
