@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS payment_events (
   last_error TEXT,
   received_at INTEGER NOT NULL,
   processed_at INTEGER,
+  lease_until INTEGER,
   PRIMARY KEY(provider,event_id)
 );
 CREATE INDEX IF NOT EXISTS idx_payment_purchases_user ON payment_purchases(user_id,created_at);

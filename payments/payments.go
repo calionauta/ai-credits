@@ -110,6 +110,12 @@ func (s *Service) ProcessPending(ctx context.Context, limit int) error {
 	if limit <= 0 {
 		limit = 100
 	}
+	now := s.now().Unix()
+	// A crashed worker leaves processing rows behind. Expired leases return to
+	// the queue before selection, making fulfillment restart-recoverable.
+	if _, err := s.db.ExecContext(ctx, `UPDATE payment_events SET process_status='failed',last_error='worker lease expired' WHERE process_status='processing' AND COALESCE(lease_until,0) < ?`, now); err != nil {
+		return err
+	}
 	rows, err := s.db.QueryContext(ctx, `SELECT provider,event_id,purchase_id,payment_id,status FROM payment_events WHERE process_status IN ('received','failed') ORDER BY received_at LIMIT ?`, limit)
 	if err != nil {
 		return err
@@ -134,7 +140,7 @@ func (s *Service) ProcessPending(ctx context.Context, limit int) error {
 
 func (s *Service) processOne(ctx context.Context, e Event) error {
 	now := s.now().Unix()
-	res, err := s.db.ExecContext(ctx, `UPDATE payment_events SET process_status='processing',attempt_count=attempt_count+1,last_error=NULL WHERE provider=? AND event_id=? AND process_status IN ('received','failed')`, e.Provider, e.EventID)
+	res, err := s.db.ExecContext(ctx, `UPDATE payment_events SET process_status='processing',attempt_count=attempt_count+1,last_error=NULL,lease_until=? WHERE provider=? AND event_id=? AND process_status IN ('received','failed')`, now+30, e.Provider, e.EventID)
 	if err != nil {
 		return err
 	}
@@ -171,7 +177,7 @@ func (s *Service) processOne(ctx context.Context, e Event) error {
 	if err != nil {
 		return s.fail(ctx, e, err)
 	}
-	_, err = s.db.ExecContext(ctx, `UPDATE payment_events SET process_status='applied',processed_at=?,last_error=NULL WHERE provider=? AND event_id=?`, now, e.Provider, e.EventID)
+	_, err = s.db.ExecContext(ctx, `UPDATE payment_events SET process_status='applied',processed_at=?,last_error=NULL,lease_until=NULL WHERE provider=? AND event_id=?`, now, e.Provider, e.EventID)
 	return err
 }
 
