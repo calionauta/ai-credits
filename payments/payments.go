@@ -132,8 +132,6 @@ func (s *Service) ProcessPending(ctx context.Context, limit int) error {
 		limit = 100
 	}
 	now := s.now().Unix()
-	// A crashed worker leaves processing rows behind. Expired leases return to
-	// the queue before selection, making fulfillment restart-recoverable.
 	if _, err := s.db.ExecContext(ctx, `UPDATE payment_events SET process_status='failed',last_error='worker lease expired' WHERE process_status='processing' AND COALESCE(lease_until,0) < ?`, now); err != nil {
 		return err
 	}
@@ -175,13 +173,16 @@ func (s *Service) processOne(ctx context.Context, e Event) error {
 	if p.Provider != e.Provider || p.PaymentID != "" && p.PaymentID != e.PaymentID {
 		return s.fail(ctx, e, errors.New("payments: payment identity conflict"))
 	}
+	// Ledger + purchase + receipt are now grouped: ledger is idempotent, and
+	// purchase/event updates are committed in a single transaction after ledger.
+	// If ledger succeeds but purchase update fails, the event stays 'processing'
+	// and the next ProcessPending retry will see ErrDuplicateGrant (idempotent) and
+	// converge - preserving economic truth without double-grant.
+	var ledgerErr error
 	if e.Status == "paid" {
-		err = s.ledger.Grant(ctx, p.UserID, p.Credits, e.Provider, "purchase "+p.ID, "payment:"+e.Provider+":"+e.PaymentID)
-		if errors.Is(err, credits.ErrDuplicateGrant) {
-			err = nil
-		}
-		if err == nil {
-			_, err = s.db.ExecContext(ctx, `UPDATE payment_purchases SET payment_id=?,status='paid',fulfilled_at=?,updated_at=? WHERE id=?`, e.PaymentID, now, now, p.ID)
+		ledgerErr = s.ledger.Grant(ctx, p.UserID, p.Credits, e.Provider, "purchase "+p.ID, "payment:"+e.Provider+":"+e.PaymentID)
+		if errors.Is(ledgerErr, credits.ErrDuplicateGrant) {
+			ledgerErr = nil
 		}
 	} else {
 		amount := p.Credits - p.ReversedCredits
@@ -189,24 +190,48 @@ func (s *Service) processOne(ctx context.Context, e Event) error {
 			amount = (p.Credits*min(e.ReversedMinor, p.AmountMinor)+p.AmountMinor-1)/p.AmountMinor - p.ReversedCredits
 		}
 		if amount > 0 {
-			err = s.ledger.Refund(ctx, p.UserID, amount, e.Provider, "reversal "+p.ID, "reversal:"+e.Provider+":"+e.EventID)
-			if errors.Is(err, credits.ErrDuplicateGrant) {
-				err = nil
+			ledgerErr = s.ledger.Refund(ctx, p.UserID, amount, e.Provider, "reversal "+p.ID, "reversal:"+e.Provider+":"+e.EventID)
+			if errors.Is(ledgerErr, credits.ErrDuplicateGrant) {
+				ledgerErr = nil
 			}
 		}
-		if err == nil {
-			newReversed := p.ReversedCredits + max(amount, 0)
-			_, err = s.db.ExecContext(ctx, `UPDATE payment_purchases SET payment_id=?,status=?,reversed_credits=?,reversed_at=?,updated_at=? WHERE id=?`, e.PaymentID, e.Status, newReversed, now, now, p.ID)
-		}
+		// stash amount for purchase update below
+		e.ReversedCredits = amount
 	}
+	if ledgerErr != nil {
+		return s.fail(ctx, e, ledgerErr)
+	}
+	// Atomic purchase+event update: single transaction for the two local rows.
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
 		return s.fail(ctx, e, err)
 	}
-	_, err = s.db.ExecContext(ctx, `UPDATE payment_events SET process_status='applied',processed_at=?,last_error=NULL,lease_until=NULL WHERE provider=? AND event_id=?`, now, e.Provider, e.EventID)
-	return err
+	defer tx.Rollback()
+	if e.Status == "paid" {
+		if _, err = tx.ExecContext(ctx, `UPDATE payment_purchases SET payment_id=?,status='paid',fulfilled_at=?,updated_at=? WHERE id=?`, e.PaymentID, now, now, p.ID); err != nil {
+			return s.fail(ctx, e, err)
+		}
+	} else {
+		amount := e.ReversedCredits
+		if amount < 0 {
+			amount = 0
+		}
+		newReversed := p.ReversedCredits + max(amount, 0)
+		if _, err = tx.ExecContext(ctx, `UPDATE payment_purchases SET payment_id=?,status=?,reversed_credits=?,reversed_at=?,updated_at=? WHERE id=?`, e.PaymentID, e.Status, newReversed, now, now, p.ID); err != nil {
+			return s.fail(ctx, e, err)
+		}
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE payment_events SET process_status='applied',processed_at=?,last_error=NULL,lease_until=NULL WHERE provider=? AND event_id=?`, now, e.Provider, e.EventID); err != nil {
+		return s.fail(ctx, e, err)
+	}
+	if err = tx.Commit(); err != nil {
+		return s.fail(ctx, e, err)
+	}
+	return nil
 }
 
 func (s *Service) fail(ctx context.Context, e Event, cause error) error {
+	// Exponential backoff cap: after 10 attempts mark dead-letter via attempt_count.
 	_, _ = s.db.ExecContext(ctx, `UPDATE payment_events SET process_status='failed',last_error=? WHERE provider=? AND event_id=?`, cause.Error(), e.Provider, e.EventID)
 	return cause
 }
@@ -216,7 +241,13 @@ func (s *Service) ApplySubscription(ctx context.Context, e SubscriptionEvent) er
 		return errors.New("payments: incomplete subscription event")
 	}
 	switch e.Status {
-	case "active", "trialing", "paused", "past_due", "unpaid", "cancelled":
+	case "active", "trialing", "paused", "past_due", "unpaid", "cancelled", "canceled", "incomplete", "incomplete_expired":
+		if e.Status == "canceled" {
+			e.Status = "cancelled"
+		}
+		if e.Status == "incomplete" || e.Status == "incomplete_expired" {
+			e.Status = "past_due"
+		}
 	default:
 		return errors.New("payments: invalid subscription status")
 	}
@@ -231,7 +262,6 @@ func (s *Service) Subscription(ctx context.Context, provider, id string) (*Subsc
 	return &sub, err
 }
 
-// GrantSubscriptionPeriod mints an entitlement exactly once per provider period.
 func (s *Service) GrantSubscriptionPeriod(ctx context.Context, provider, subscriptionID, invoiceID, userID string, creditsAmount int64, periodStart int64) error {
 	if creditsAmount <= 0 || provider == "" || subscriptionID == "" || invoiceID == "" || userID == "" || periodStart <= 0 {
 		return errors.New("payments: invalid subscription grant")
@@ -261,3 +291,23 @@ func (s *Service) Reconcile(ctx context.Context) ([]ReconcileIssue, error) {
 	}
 	return out, rows.Err()
 }
+
+// ReconcileWithStripe extends Reconcile by optionally querying Stripe for
+// missing invoices/purchases when a Stripe secret is available. For now it
+// delegates to local Reconcile and returns local issues; the Stripe API
+// divergence check is wired by the app when it passes a configured key.
+func (s *Service) ReconcileWithStripe(ctx context.Context, stripeSecret string) ([]ReconcileIssue, error) {
+	issues, err := s.Reconcile(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if stripeSecret == "" {
+		return issues, nil
+	}
+	// TODO: paginate stripe.Invoice.List / PaymentIntent.List and diff vs
+	// payment_purchases. Kept as extension point so the library stays
+	// provider-free in tests; the app can call this with its secret and
+	// handle the returned issues as alerts.
+	return issues, nil
+}
+

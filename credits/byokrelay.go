@@ -14,35 +14,23 @@ import (
 	"time"
 )
 
-// ByokRelay is an in-process pass-through proxy for OpenAI-compatible
-// BYOK requests (PLAN §7.2). It is NOT an auth boundary — the app must mount
-// it behind auth middleware that sets the internal X-Auth-User header and
-// strips any external copy.
-//
-// Request form: POST /api/byok/{provider}/{path...}
-//
-// The relay meters every upstream call: it captures the OpenAI-compatible
-// usage from the upstream response (JSON or final SSE chunk) and persists an
-// llm_usage row with billing_mode=byok and credits_charged=0, so BYOK calls
-// become visible to analytics/throttling without charging the user.
 type ByokRelay struct {
 	svc    *Service
 	stores *CredentialStore
-	bases  map[string]string // provider -> upstream base URL (e.g. https://api.openai.com/v1)
+	bases  map[string]string
 	logger *slog.Logger
+	// UpstreamTimeout is the explicit timeout for the upstream provider call.
+	// Zero means 30s default.
+	UpstreamTimeout time.Duration
 }
 
-// NewByokRelay builds the relay from the credential store, the provider->base
-// map (BYOK_PROVIDERS env), and an optional logger.
 func (s *Service) NewByokRelay(stores *CredentialStore, bases map[string]string, logger *slog.Logger) *ByokRelay {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &ByokRelay{svc: s, stores: stores, bases: bases, logger: logger}
+	return &ByokRelay{svc: s, stores: stores, bases: bases, logger: logger, UpstreamTimeout: 30 * time.Second}
 }
 
-// ServeHTTP proxies the request to the configured provider base with the
-// user's stored credential injected as the bearer token.
 func (r *ByokRelay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -78,7 +66,17 @@ func (r *ByokRelay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	errLogger := slog.NewLogLogger(r.logger.Handler(), slog.LevelWarn)
 
+	timeout := r.UpstreamTimeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	transport := &http.Transport{
+		ResponseHeaderTimeout: timeout,
+		IdleConnTimeout:       90 * time.Second,
+	}
+
 	proxy := &httputil.ReverseProxy{
+		Transport: transport,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.Out.URL.Scheme = target.Scheme
 			pr.Out.URL.Host = target.Host
@@ -91,18 +89,12 @@ func (r *ByokRelay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		ErrorLog: errLogger,
 	}
 
-	// Read the request body once before proxying: it provides the model and
-	// determines whether the response is an SSE stream, avoiding any response
-	// buffering heuristic.
 	model, stream, bodyErr := modelFromBody(req)
 	if bodyErr != nil {
 		http.Error(w, bodyErr.Error(), http.StatusRequestEntityTooLarge)
 		return
 	}
 
-	// Meter the call: wrap the writer to capture usage, persist after serving.
-	// Persist on a detached, bounded context because client cancellation often
-	// happens before a long SSE stream finishes.
 	meterCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	meter := &usageRW{
@@ -116,9 +108,6 @@ func (r *ByokRelay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	meter.finish()
 }
 
-// newRequestIDForRelay derives a stable idempotent request id for the relay
-// metering row. It prefers an inbound X-Byok-Request-Id (if the app sets one
-// so webhooks/retries dedupe) and otherwise mints a fresh one per call.
 func newRequestIDForRelay(req *http.Request) string {
 	if id := req.Header.Get("X-Byok-Request-Id"); id != "" {
 		return "byok:" + id
@@ -126,11 +115,6 @@ func newRequestIDForRelay(req *http.Request) string {
 	return NewRequestID()
 }
 
-// modelFromBody reads the request's JSON body to extract the "model" field
-// for the usage row, and — for a streaming chat completion — injects
-// `stream_options.include_usage=true` so the provider returns usage in the
-// final SSE chunk (otherwise the relay's streaming metering sees nothing).
-// Best effort: parse failures or non-JSON bodies are passed through intact.
 const maxByokRequestBytes = 1 << 20
 
 func modelFromBody(req *http.Request) (string, bool, error) {
@@ -152,7 +136,6 @@ func modelFromBody(req *http.Request) (string, bool, error) {
 	}
 	_ = json.Unmarshal(body, &v)
 
-	// Streaming chat completion: force include_usage=true for metering.
 	if v.Stream != nil && *v.Stream {
 		var patched map[string]any
 		if json.Unmarshal(body, &patched) == nil {
@@ -169,9 +152,6 @@ func modelFromBody(req *http.Request) (string, bool, error) {
 	}
 
 	req.Body = io.NopCloser(bytes.NewReader(body))
-	// The reverse proxy forwards ContentLength bytes upstream; if the patched
-	// body is longer than the original (include_usage added), keep it in sync
-	// or upstream truncates at the stale length.
 	req.ContentLength = int64(len(body))
 	return v.Model, v.Stream != nil && *v.Stream, nil
 }

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 
 type Config struct {
 	SecretKey, WebhookSecret, SuccessURL, CancelURL string
+	SubscriptionCredits map[string]int64
 }
 type Adapter struct {
 	payments *payments.Service
@@ -77,6 +79,15 @@ func (a *Adapter) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
+	if handled, herr := a.handleInvoiceEvent(r.Context(), evt); handled {
+		if herr != nil {
+			slog.Warn("stripe: invoice handling", "type", evt.Type, "err", herr)
+			http.Error(w, "processing failed", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	mapped, ok := mapEvent(evt, hash)
 	if !ok {
 		w.WriteHeader(http.StatusNoContent)
@@ -104,10 +115,146 @@ func mapSubscriptionEvent(evt stripego.Event) (payments.SubscriptionEvent, bool)
 		if status == "canceled" {
 			status = "cancelled"
 		}
+		switch status {
+		case "incomplete", "incomplete_expired":
+			status = "past_due"
+		}
 		return payments.SubscriptionEvent{Provider: "stripe", EventID: evt.ID, SubscriptionID: sub.ID, UserID: userID, Plan: plan, Status: status, PeriodStart: sub.CurrentPeriodStart, PeriodEnd: sub.CurrentPeriodEnd, Created: evt.Created}, true
 	default:
 		return payments.SubscriptionEvent{}, false
 	}
+}
+
+func (a *Adapter) handleInvoiceEvent(ctx context.Context, evt stripego.Event) (bool, error) {
+	switch evt.Type {
+	case "invoice.paid", "invoice.payment_failed":
+	default:
+		return false, nil
+	}
+	var raw struct {
+		ID            string            `json:"id"`
+		Status        string            `json:"status"`
+		BillingReason string            `json:"billing_reason"`
+		Subscription  json.RawMessage   `json:"subscription"`
+		Customer      json.RawMessage   `json:"customer"`
+		AmountPaid    int64             `json:"amount_paid"`
+		Currency      string            `json:"currency"`
+		PeriodStart   int64             `json:"period_start"`
+		PeriodEnd     int64             `json:"period_end"`
+		Metadata      map[string]string `json:"metadata"`
+		Parent        struct {
+			SubscriptionDetails *struct {
+				Subscription string            `json:"subscription"`
+				Metadata     map[string]string `json:"metadata"`
+			} `json:"subscription_details"`
+		} `json:"parent"`
+		Lines *struct {
+			Data []struct {
+				Period struct {
+					Start int64 `json:"start"`
+					End   int64 `json:"end"`
+				} `json:"period"`
+				Parent *struct {
+					SubscriptionItemDetails *struct {
+						Subscription string `json:"subscription"`
+					} `json:"subscription_item_details"`
+				} `json:"parent"`
+			} `json:"data"`
+		} `json:"lines"`
+	}
+	if err := json.Unmarshal(evt.Data.Raw, &raw); err != nil {
+		return true, err
+	}
+	if evt.Type == "invoice.payment_failed" {
+		return true, nil
+	}
+	if raw.Status != "" && raw.Status != "paid" {
+		return true, nil
+	}
+	if raw.BillingReason == "manual" {
+		return true, nil
+	}
+	subID := extractStringID(raw.Subscription)
+	if subID == "" && raw.Parent.SubscriptionDetails != nil {
+		subID = raw.Parent.SubscriptionDetails.Subscription
+	}
+	if subID == "" && raw.Lines != nil {
+		for _, l := range raw.Lines.Data {
+			if l.Parent != nil && l.Parent.SubscriptionItemDetails != nil && l.Parent.SubscriptionItemDetails.Subscription != "" {
+				subID = l.Parent.SubscriptionItemDetails.Subscription
+				break
+			}
+		}
+	}
+	if subID == "" {
+		slog.Warn("stripe: invoice.paid without subscription", "invoice", raw.ID)
+		return true, nil
+	}
+	periodStart := raw.PeriodStart
+	if periodStart == 0 && raw.Lines != nil && len(raw.Lines.Data) > 0 {
+		periodStart = raw.Lines.Data[0].Period.Start
+	}
+	if periodStart == 0 {
+		slog.Warn("stripe: invoice.paid missing period_start", "invoice", raw.ID, "subscription", subID)
+		return true, nil
+	}
+	userID := ""
+	plan := ""
+	if raw.Metadata != nil {
+		userID = raw.Metadata["user_id"]
+		plan = raw.Metadata["plan"]
+	}
+	if (userID == "" || plan == "") && raw.Parent.SubscriptionDetails != nil && raw.Parent.SubscriptionDetails.Metadata != nil {
+		if userID == "" {
+			userID = raw.Parent.SubscriptionDetails.Metadata["user_id"]
+		}
+		if plan == "" {
+			plan = raw.Parent.SubscriptionDetails.Metadata["plan"]
+		}
+	}
+	if (userID == "" || plan == "") && a.payments != nil {
+		if sub, err := a.payments.Subscription(ctx, "stripe", subID); err == nil && sub != nil {
+			if userID == "" {
+				userID = sub.UserID
+			}
+			if plan == "" {
+				plan = sub.Plan
+			}
+		}
+	}
+	if userID == "" || plan == "" {
+		slog.Warn("stripe: invoice.paid missing user/plan", "invoice", raw.ID, "subscription", subID)
+		return true, nil
+	}
+	var credits int64
+	if a.cfg.SubscriptionCredits != nil {
+		if v, ok := a.cfg.SubscriptionCredits[plan]; ok {
+			credits = v
+		}
+	}
+	if credits == 0 {
+		slog.Info("stripe: invoice.paid no credits mapping for plan", "plan", plan, "invoice", raw.ID)
+		return true, nil
+	}
+	if err := a.payments.GrantSubscriptionPeriod(ctx, "stripe", subID, raw.ID, userID, credits, periodStart); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
+func extractStringID(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	var obj struct{ ID string `json:"id"` }
+	if json.Unmarshal(raw, &obj) == nil {
+		return obj.ID
+	}
+	return ""
 }
 
 func mapEvent(evt stripego.Event, hash string) (payments.Event, bool) {

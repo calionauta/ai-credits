@@ -9,8 +9,6 @@ import (
 	"golang.org/x/crypto/chacha20poly1305"
 )
 
-// BYOK credential storage. User-supplied provider credentials are sealed with
-// XChaCha20-Poly1305 and stored in byok_credentials.
 var (
 	ErrCredentialStoreDisabled = errors.New("credits: byok store disabled (no sealing key)")
 	ErrCredentialNotFound      = errors.New("credits: credential not found")
@@ -39,12 +37,20 @@ func (c *CredentialStore) Put(ctx context.Context, userID, provider, cred string
 		return err
 	}
 	ts := c.now()
+	// Versioned: keep previous key on rotation for grace period.
+	var prev []byte
+	_ = c.db.QueryRowContext(ctx, `SELECT encrypted_key FROM byok_credentials WHERE user_id=? AND provider=?`, userID, provider).Scan(&prev)
+	version := 1
+	var curVer int
+	if err := c.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(version),0) FROM byok_credentials WHERE user_id=? AND provider=?`, userID, provider).Scan(&curVer); err == nil && curVer > 0 {
+		version = curVer + 1
+	}
 	_, err = c.db.ExecContext(ctx,
-		`INSERT INTO byok_credentials (user_id, provider, encrypted_key, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?)
+		`INSERT INTO byok_credentials (user_id, provider, encrypted_key, version, previous_key, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(user_id, provider) DO UPDATE SET
-		   encrypted_key = excluded.encrypted_key, updated_at = excluded.updated_at`,
-		userID, provider, sealed, ts, ts)
+		   encrypted_key = excluded.encrypted_key, version = excluded.version, previous_key = excluded.previous_key, updated_at = excluded.updated_at`,
+		userID, provider, sealed, version, prev, ts, ts)
 	return err
 }
 
@@ -62,7 +68,29 @@ func (c *CredentialStore) Get(ctx context.Context, userID, provider string) (str
 	if err != nil {
 		return "", err
 	}
-	return c.open(sealed, []byte(userID+"\x00"+provider))
+	// Try current key, then previous version grace.
+	cred, err := c.open(sealed, []byte(userID+"\x00"+provider))
+	if err == nil {
+		return cred, nil
+	}
+	// Fallback to previous_key if decrypt failed due to rotation race.
+	var prev []byte
+	if qerr := c.db.QueryRowContext(ctx, `SELECT previous_key FROM byok_credentials WHERE user_id=? AND provider=?`, userID, provider).Scan(&prev); qerr == nil && len(prev) > 0 {
+		if pc, perr := c.open(prev, []byte(userID+"\x00"+provider)); perr == nil {
+			return pc, nil
+		}
+	}
+	return "", err
+}
+
+func (c *CredentialStore) GetVersion(ctx context.Context, userID, provider string) (int, error) {
+	var v int
+	err := c.db.QueryRowContext(ctx, `SELECT version FROM byok_credentials WHERE user_id=? AND provider=?`, userID, provider).Scan(&v)
+	return v, err
+}
+
+func (c *CredentialStore) Rotate(ctx context.Context, userID, provider, newCred string) error {
+	return c.Put(ctx, userID, provider, newCred)
 }
 
 func (c *CredentialStore) Delete(ctx context.Context, userID, provider string) error {
