@@ -193,3 +193,66 @@ func TestPurchaseLifecycle(t *testing.T) {
 		t.Fatalf("refund balance %d", b)
 	}
 }
+
+func TestWorkerDeadLetter(t *testing.T) {
+	db, _ := sql.Open("sqlite", "file:deadletter?mode=memory&cache=shared")
+	defer db.Close()
+	ledger, _ := credits.New(db, credits.Config{})
+	svc, _ := New(db, ledger, map[string]CatalogItem{"x": {Credits: 10, Currency: "usd", AmountMinor: 100}})
+	ctx := context.Background()
+	p, _ := svc.CreatePurchase(ctx, "stripe", "u", "x")
+	// Insert failed event with high attempt_count
+	_, _ = db.Exec(`INSERT INTO payment_events(provider,event_id,purchase_id,payment_id,status,process_status,received_at,attempt_count,lease_until) VALUES('stripe','evt_dl',?,'pi_dl','paid','failed',1,10,999999)`, p.ID)
+	called := false
+	w := NewWorker(svc, WorkerConfig{MaxAttempts: 5, DeadLetter: func(ctx context.Context, e Event, err error) { called = true }})
+	w.checkDeadLetter(ctx)
+	if !called {
+		t.Fatal("expected dead-letter callback")
+	}
+}
+
+func TestSubscriptionNewColumns(t *testing.T) {
+	db, _ := sql.Open("sqlite", "file:subs-newcols?mode=memory&cache=shared")
+	defer db.Close()
+	ledger, _ := credits.New(db, credits.Config{})
+	svc, _ := New(db, ledger, map[string]CatalogItem{})
+	ctx := context.Background()
+	evt := SubscriptionEvent{Provider: "stripe", EventID: "evt1", SubscriptionID: "sub1", UserID: "u", Plan: "pro", Status: "trialing", PeriodStart: 100, PeriodEnd: 200, Created: 10, TrialStart: 90, TrialEnd: 110, CancelAt: 500, CancelAtPeriodEnd: true}
+	if err := svc.ApplySubscription(ctx, evt); err != nil {
+		t.Fatal(err)
+	}
+	sub, _ := svc.Subscription(ctx, "stripe", "sub1")
+	if sub.TrialEnd != 110 || !sub.CancelAtPeriodEnd || sub.CancelAt != 500 {
+		t.Fatalf("new cols not persisted: %+v", sub)
+	}
+	// cancel should set canceled_at
+	evt2 := SubscriptionEvent{Provider: "stripe", EventID: "evt2", SubscriptionID: "sub1", UserID: "u", Plan: "pro", Status: "cancelled", PeriodStart: 100, PeriodEnd: 200, Created: 20}
+	_ = svc.ApplySubscription(ctx, evt2)
+	sub2, _ := svc.Subscription(ctx, "stripe", "sub1")
+	if sub2.CanceledAt == 0 {
+		t.Fatalf("canceled_at not set")
+	}
+}
+
+func TestAtomicGrantTx(t *testing.T) {
+	db, _ := sql.Open("sqlite", "file:atomic?mode=memory&cache=shared")
+	defer db.Close()
+	ledger, _ := credits.New(db, credits.Config{})
+	svc, _ := New(db, ledger, map[string]CatalogItem{"topup": {Credits: 50, Currency: "usd", AmountMinor: 500}})
+	ctx := context.Background()
+	p, _ := svc.CreatePurchase(ctx, "stripe", "u", "topup")
+	e := Event{Provider: "stripe", EventID: "evt_atomic", PaymentID: "pi_atomic", PurchaseID: p.ID, Status: "paid"}
+	if err := svc.Receive(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	bal, _ := ledger.Balance(ctx, "u")
+	if bal != 50 {
+		t.Fatalf("atomic grant balance=%d want 50", bal)
+	}
+	// verify purchase and event committed atomically
+	var status string
+	_ = db.QueryRow(`SELECT status FROM payment_purchases WHERE id=?`, p.ID).Scan(&status)
+	if status != "paid" {
+		t.Fatalf("purchase status=%s", status)
+	}
+}
