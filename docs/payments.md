@@ -27,11 +27,28 @@ Refunds and disputes reverse the original grant. If credits were already consume
 
 ## Webhook events
 
-Supported initially:
+Supported events:
 
 - `checkout.session.completed`
 - `checkout.session.async_payment_succeeded`
-- `charge.refunded`
+- `charge.refunded` (cumulative proportional credit reversal)
 - `charge.dispute.created`
+- `customer.subscription.created|updated|deleted`
 
-Provider-specific subscription products remain application-owned. Monthly entitlements should be granted from paid invoice periods using an idempotency key containing the provider subscription ID and period start; never use an approximate 30-day clock.
+Subscription state stores exact provider period boundaries and rejects stale,
+out-of-order updates. `GrantSubscriptionPeriod` grants entitlements exactly once
+per provider, subscription, period start, and invoice. Applications own the
+Stripe price-to-plan/credit catalog and invoke this helper only for verified
+paid invoices; never use an approximate 30-day clock.
+
+## Security and recovery
+
+Payment events are leased to workers. An expired `processing` lease is returned
+to the queue after a crash; ledger idempotency keys make replay safe. Duplicate
+event IDs with different payload hashes are rejected. Reconciliation reports
+pending receipts, stale purchases, and fulfilled purchases without an applied
+receipt.
+
+BYOK upstreams require HTTPS, except explicit loopback HTTP for local testing.
+Request bodies are capped at 1 MiB and rejected with 413 instead of forwarding
+an empty request.

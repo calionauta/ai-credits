@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -68,7 +70,7 @@ func (r *ByokRelay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	target, err := url.Parse(base)
-	if err != nil || target.Scheme != "https" && target.Scheme != "http" || target.Host == "" {
+	if err != nil || target.Scheme != "https" && !(target.Scheme == "http" && isLoopbackHost(target.Hostname())) || target.Host == "" {
 		http.Error(w, "bad provider base", http.StatusInternalServerError)
 		return
 	}
@@ -92,7 +94,11 @@ func (r *ByokRelay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// Read the request body once before proxying: it provides the model and
 	// determines whether the response is an SSE stream, avoiding any response
 	// buffering heuristic.
-	model, stream := modelFromBody(req)
+	model, stream, bodyErr := modelFromBody(req)
+	if bodyErr != nil {
+		http.Error(w, bodyErr.Error(), http.StatusRequestEntityTooLarge)
+		return
+	}
 
 	// Meter the call: wrap the writer to capture usage, persist after serving.
 	// Persist on a detached, bounded context because client cancellation often
@@ -127,15 +133,17 @@ func newRequestIDForRelay(req *http.Request) string {
 // Best effort: parse failures or non-JSON bodies are passed through intact.
 const maxByokRequestBytes = 1 << 20
 
-func modelFromBody(req *http.Request) (string, bool) {
+func modelFromBody(req *http.Request) (string, bool, error) {
 	if req.Body == nil {
-		return "", false
+		return "", false, nil
 	}
 	body, err := io.ReadAll(io.LimitReader(req.Body, maxByokRequestBytes+1))
 	req.Body.Close()
-	if err != nil || len(body) > maxByokRequestBytes {
-		req.Body = io.NopCloser(bytes.NewReader(nil))
-		return "", false
+	if err != nil {
+		return "", false, err
+	}
+	if len(body) > maxByokRequestBytes {
+		return "", false, errors.New("request body too large")
 	}
 
 	var v struct {
@@ -165,5 +173,10 @@ func modelFromBody(req *http.Request) (string, bool) {
 	// body is longer than the original (include_usage added), keep it in sync
 	// or upstream truncates at the stale length.
 	req.ContentLength = int64(len(body))
-	return v.Model, v.Stream != nil && *v.Stream
+	return v.Model, v.Stream != nil && *v.Stream, nil
+}
+
+func isLoopbackHost(host string) bool {
+	ip := net.ParseIP(host)
+	return host == "localhost" || ip != nil && ip.IsLoopback()
 }
