@@ -3,9 +3,11 @@ package payments
 import (
 	"context"
 	"database/sql"
+	"testing"
+	"time"
+
 	"github.com/calionauta/ai-credits/credits"
 	_ "modernc.org/sqlite"
-	"testing"
 )
 
 func TestWorkerRecoversExpiredProcessingLease(t *testing.T) {
@@ -96,6 +98,60 @@ func TestEventIDPayloadCollisionRejected(t *testing.T) {
 	e.PayloadHash = "two"
 	if err := svc.Receive(context.Background(), e); err == nil {
 		t.Fatal("expected collision error")
+	}
+}
+
+func TestSubscriptionEventsIgnoreOutOfOrderUpdates(t *testing.T) {
+	db, _ := sql.Open("sqlite", "file:subs?mode=memory&cache=shared")
+	defer db.Close()
+	ledger, _ := credits.New(db, credits.Config{})
+	svc, _ := New(db, ledger, map[string]CatalogItem{})
+	ctx := context.Background()
+	newer := SubscriptionEvent{Provider: "stripe", EventID: "evt2", SubscriptionID: "sub1", UserID: "u", Plan: "pro", Status: "active", PeriodStart: 200, PeriodEnd: 300, Created: 20}
+	older := newer
+	older.EventID = "evt1"
+	older.Status = "cancelled"
+	older.PeriodStart = 100
+	older.Created = 10
+	if err := svc.ApplySubscription(ctx, newer); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.ApplySubscription(ctx, older); err != nil {
+		t.Fatal(err)
+	}
+	sub, err := svc.Subscription(ctx, "stripe", "sub1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sub.Status != "active" || sub.PeriodStart != 200 {
+		t.Fatalf("sub=%+v", sub)
+	}
+	if err := svc.GrantSubscriptionPeriod(ctx, "stripe", "sub1", "in1", "u", 100, 200); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.GrantSubscriptionPeriod(ctx, "stripe", "sub1", "in1", "u", 100, 200); err != nil {
+		t.Fatal(err)
+	}
+	balance, _ := ledger.Balance(ctx, "u")
+	if balance != 100 {
+		t.Fatalf("balance=%d", balance)
+	}
+}
+
+func TestReconcileClassifiesPendingState(t *testing.T) {
+	db, _ := sql.Open("sqlite", "file:reconcile?mode=memory&cache=shared")
+	defer db.Close()
+	ledger, _ := credits.New(db, credits.Config{})
+	svc, _ := New(db, ledger, map[string]CatalogItem{"x": {Credits: 10, Currency: "usd", AmountMinor: 100}})
+	svc.now = func() time.Time { return time.Unix(7200, 0) }
+	p, _ := svc.CreatePurchase(context.Background(), "stripe", "u", "x")
+	_, _ = db.Exec(`UPDATE payment_purchases SET created_at=1 WHERE id=?`, p.ID)
+	issues, err := svc.Reconcile(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(issues) != 1 || issues[0].Kind != "purchase" {
+		t.Fatalf("issues=%+v", issues)
 	}
 }
 

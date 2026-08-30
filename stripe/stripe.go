@@ -69,6 +69,14 @@ func (a *Adapter) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	h := sha256.Sum256(body)
 	hash := hex.EncodeToString(h[:])
+	if sub, ok := mapSubscriptionEvent(evt); ok {
+		if err = a.payments.ApplySubscription(r.Context(), sub); err != nil {
+			http.Error(w, "processing failed", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	mapped, ok := mapEvent(evt, hash)
 	if !ok {
 		w.WriteHeader(http.StatusNoContent)
@@ -79,6 +87,27 @@ func (a *Adapter) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+func mapSubscriptionEvent(evt stripego.Event) (payments.SubscriptionEvent, bool) {
+	switch evt.Type {
+	case "customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted":
+		var sub stripego.Subscription
+		if json.Unmarshal(evt.Data.Raw, &sub) != nil {
+			return payments.SubscriptionEvent{}, false
+		}
+		userID, plan := sub.Metadata["user_id"], sub.Metadata["plan"]
+		if userID == "" || plan == "" {
+			return payments.SubscriptionEvent{}, false
+		}
+		status := string(sub.Status)
+		if status == "canceled" {
+			status = "cancelled"
+		}
+		return payments.SubscriptionEvent{Provider: "stripe", EventID: evt.ID, SubscriptionID: sub.ID, UserID: userID, Plan: plan, Status: status, PeriodStart: sub.CurrentPeriodStart, PeriodEnd: sub.CurrentPeriodEnd, Created: evt.Created}, true
+	default:
+		return payments.SubscriptionEvent{}, false
+	}
 }
 
 func mapEvent(evt stripego.Event, hash string) (payments.Event, bool) {

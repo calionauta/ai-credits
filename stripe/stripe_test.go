@@ -14,6 +14,27 @@ import (
 	"time"
 )
 
+func TestSubscriptionWebhookMapsPeriodAndStatus(t *testing.T) {
+	db, _ := sql.Open("sqlite", "file:stripe-sub?mode=memory&cache=shared")
+	defer db.Close()
+	ledger, _ := credits.New(db, credits.Config{})
+	p, _ := payments.New(db, ledger, map[string]payments.CatalogItem{})
+	a, _ := New(p, Config{WebhookSecret: "whsec_test"})
+	payload := []byte(`{"id":"evt_sub","created":20,"api_version":"2024-09-30.acacia","type":"customer.subscription.updated","data":{"object":{"id":"sub_1","status":"active","current_period_start":100,"current_period_end":200,"metadata":{"user_id":"u","plan":"pro"}}}}`)
+	signed := webhook.GenerateTestSignedPayload(&webhook.UnsignedPayload{Payload: payload, Secret: "whsec_test", Timestamp: time.Now()})
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(signed.Payload))
+	req.Header.Set("Stripe-Signature", signed.Header)
+	a.HandleWebhook(rr, req)
+	if rr.Code != 200 {
+		t.Fatalf("status=%d %s", rr.Code, rr.Body.String())
+	}
+	sub, err := p.Subscription(context.Background(), "stripe", "sub_1")
+	if err != nil || sub.Status != "active" || sub.PeriodStart != 100 {
+		t.Fatalf("sub=%+v err=%v", sub, err)
+	}
+}
+
 func TestWebhookFulfillmentIsIdempotent(t *testing.T) {
 	db, _ := sql.Open("sqlite", "file:stripe?mode=memory&cache=shared")
 	defer db.Close()

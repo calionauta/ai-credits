@@ -39,6 +39,16 @@ type Purchase struct {
 	Credits, AmountMinor, ReversedCredits                  int64
 }
 
+type SubscriptionEvent struct {
+	Provider, EventID, SubscriptionID, UserID, Plan, Status string
+	PeriodStart, PeriodEnd, Created                         int64
+}
+
+type Subscription struct {
+	Provider, ID, UserID, Plan, Status string
+	PeriodStart, PeriodEnd             int64
+}
+
 type Service struct {
 	db      *sql.DB
 	ledger  Ledger
@@ -201,21 +211,53 @@ func (s *Service) fail(ctx context.Context, e Event, cause error) error {
 	return cause
 }
 
+func (s *Service) ApplySubscription(ctx context.Context, e SubscriptionEvent) error {
+	if e.Provider == "" || e.EventID == "" || e.SubscriptionID == "" || e.UserID == "" || e.Plan == "" || e.Created <= 0 {
+		return errors.New("payments: incomplete subscription event")
+	}
+	switch e.Status {
+	case "active", "trialing", "paused", "past_due", "unpaid", "cancelled":
+	default:
+		return errors.New("payments: invalid subscription status")
+	}
+	now := s.now().Unix()
+	_, err := s.db.ExecContext(ctx, `INSERT INTO payment_subscriptions(provider,subscription_id,user_id,plan,status,period_start,period_end,last_event_created,updated_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(provider,subscription_id) DO UPDATE SET user_id=excluded.user_id,plan=excluded.plan,status=excluded.status,period_start=excluded.period_start,period_end=excluded.period_end,last_event_created=excluded.last_event_created,updated_at=excluded.updated_at WHERE excluded.last_event_created > payment_subscriptions.last_event_created`, e.Provider, e.SubscriptionID, e.UserID, e.Plan, e.Status, e.PeriodStart, e.PeriodEnd, e.Created, now)
+	return err
+}
+
+func (s *Service) Subscription(ctx context.Context, provider, id string) (*Subscription, error) {
+	var sub Subscription
+	err := s.db.QueryRowContext(ctx, `SELECT provider,subscription_id,user_id,plan,status,period_start,period_end FROM payment_subscriptions WHERE provider=? AND subscription_id=?`, provider, id).Scan(&sub.Provider, &sub.ID, &sub.UserID, &sub.Plan, &sub.Status, &sub.PeriodStart, &sub.PeriodEnd)
+	return &sub, err
+}
+
+// GrantSubscriptionPeriod mints an entitlement exactly once per provider period.
+func (s *Service) GrantSubscriptionPeriod(ctx context.Context, provider, subscriptionID, invoiceID, userID string, creditsAmount int64, periodStart int64) error {
+	if creditsAmount <= 0 || provider == "" || subscriptionID == "" || invoiceID == "" || userID == "" || periodStart <= 0 {
+		return errors.New("payments: invalid subscription grant")
+	}
+	err := s.ledger.Grant(ctx, userID, creditsAmount, provider, "subscription period "+subscriptionID, "subscription:"+provider+":"+subscriptionID+":"+fmt.Sprint(periodStart)+":"+invoiceID)
+	if errors.Is(err, credits.ErrDuplicateGrant) {
+		return nil
+	}
+	return err
+}
+
 type ReconcileIssue struct{ Kind, ID string }
 
 func (s *Service) Reconcile(ctx context.Context) ([]ReconcileIssue, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT provider||':'||event_id FROM payment_events WHERE process_status!='applied' UNION ALL SELECT id FROM payment_purchases WHERE status='pending' AND created_at<?`, s.now().Add(-time.Hour).Unix())
+	rows, err := s.db.QueryContext(ctx, `SELECT 'event',provider||':'||event_id FROM payment_events WHERE process_status!='applied' UNION ALL SELECT 'purchase',id FROM payment_purchases WHERE status='pending' AND created_at<? UNION ALL SELECT 'payment-without-event',p.id FROM payment_purchases p WHERE p.status IN ('paid','refunded','disputed') AND NOT EXISTS (SELECT 1 FROM payment_events e WHERE e.purchase_id=p.id AND e.process_status='applied')`, s.now().Add(-time.Hour).Unix())
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []ReconcileIssue
 	for rows.Next() {
-		var id string
-		if err = rows.Scan(&id); err != nil {
+		var kind, id string
+		if err = rows.Scan(&kind, &id); err != nil {
 			return nil, err
 		}
-		out = append(out, ReconcileIssue{Kind: "pending", ID: id})
+		out = append(out, ReconcileIssue{Kind: kind, ID: id})
 	}
 	return out, rows.Err()
 }
