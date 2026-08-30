@@ -47,6 +47,58 @@ func TestWorkerRecoversExpiredProcessingLease(t *testing.T) {
 	}
 }
 
+func TestPartialRefundsAreCumulativeAndIdempotent(t *testing.T) {
+	db, _ := sql.Open("sqlite", "file:partial?mode=memory&cache=shared")
+	defer db.Close()
+	ledger, err := credits.New(db, credits.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := New(db, ledger, map[string]CatalogItem{"topup": {Credits: 100, Currency: "usd", AmountMinor: 1000}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	p, _ := svc.CreatePurchase(ctx, "stripe", "u", "topup")
+	if err = svc.Receive(ctx, Event{Provider: "stripe", EventID: "paid", PaymentID: "pi", PurchaseID: p.ID, Status: "paid", PayloadHash: "a"}); err != nil {
+		t.Fatal(err)
+	}
+	first := Event{Provider: "stripe", EventID: "refund-1", PaymentID: "pi", PurchaseID: p.ID, Status: "refunded", ReversedMinor: 250, PayloadHash: "b"}
+	if err = svc.Receive(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	if err = svc.Receive(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	if err = svc.Receive(ctx, Event{Provider: "stripe", EventID: "refund-2", PaymentID: "pi", PurchaseID: p.ID, Status: "refunded", ReversedMinor: 500, PayloadHash: "c"}); err != nil {
+		t.Fatal(err)
+	}
+	balance, _ := ledger.Balance(ctx, "u")
+	if balance != 50 {
+		t.Fatalf("balance=%d want 50", balance)
+	}
+	purchase, _ := svc.Purchase(ctx, p.ID)
+	if purchase.ReversedCredits != 50 {
+		t.Fatalf("reversed=%d", purchase.ReversedCredits)
+	}
+}
+
+func TestEventIDPayloadCollisionRejected(t *testing.T) {
+	db, _ := sql.Open("sqlite", "file:collision?mode=memory&cache=shared")
+	defer db.Close()
+	ledger, _ := credits.New(db, credits.Config{})
+	svc, _ := New(db, ledger, map[string]CatalogItem{"x": {Credits: 10, Currency: "usd", AmountMinor: 100}})
+	p, _ := svc.CreatePurchase(context.Background(), "stripe", "u", "x")
+	e := Event{Provider: "stripe", EventID: "same", PaymentID: "pi", PurchaseID: p.ID, Status: "paid", PayloadHash: "one"}
+	if err := svc.Receive(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	e.PayloadHash = "two"
+	if err := svc.Receive(context.Background(), e); err == nil {
+		t.Fatal("expected collision error")
+	}
+}
+
 func TestPurchaseLifecycle(t *testing.T) {
 	db, err := sql.Open("sqlite", "file:test?mode=memory&cache=shared")
 	if err != nil {

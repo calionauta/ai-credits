@@ -30,7 +30,7 @@ type CatalogItem struct {
 
 type Event struct {
 	Provider, EventID, PaymentID, PurchaseID, Status, PayloadHash string
-	ReversedCredits                                               int64
+	ReversedCredits, ReversedMinor                                int64
 	OccurredAt                                                    time.Time
 }
 
@@ -97,7 +97,18 @@ func (s *Service) Receive(ctx context.Context, e Event) error {
 	if e.Status != "paid" && e.Status != "refunded" && e.Status != "disputed" {
 		return fmt.Errorf("payments: unsupported status %q", e.Status)
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO payment_events(provider,event_id,purchase_id,payment_id,status,payload_hash,received_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(provider,event_id) DO NOTHING`, e.Provider, e.EventID, e.PurchaseID, e.PaymentID, e.Status, e.PayloadHash, s.now().Unix())
+	res, err := s.db.ExecContext(ctx, `INSERT INTO payment_events(provider,event_id,purchase_id,payment_id,status,payload_hash,reversed_minor,received_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(provider,event_id) DO NOTHING`, e.Provider, e.EventID, e.PurchaseID, e.PaymentID, e.Status, e.PayloadHash, e.ReversedMinor, s.now().Unix())
+	if err == nil {
+		if n, _ := res.RowsAffected(); n == 0 {
+			var hash string
+			if qerr := s.db.QueryRowContext(ctx, `SELECT COALESCE(payload_hash,'') FROM payment_events WHERE provider=? AND event_id=?`, e.Provider, e.EventID).Scan(&hash); qerr != nil {
+				return qerr
+			}
+			if hash != e.PayloadHash {
+				return errors.New("payments: event id reused with different payload")
+			}
+		}
+	}
 	if err != nil {
 		return err
 	}
@@ -116,14 +127,14 @@ func (s *Service) ProcessPending(ctx context.Context, limit int) error {
 	if _, err := s.db.ExecContext(ctx, `UPDATE payment_events SET process_status='failed',last_error='worker lease expired' WHERE process_status='processing' AND COALESCE(lease_until,0) < ?`, now); err != nil {
 		return err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT provider,event_id,purchase_id,payment_id,status FROM payment_events WHERE process_status IN ('received','failed') ORDER BY received_at LIMIT ?`, limit)
+	rows, err := s.db.QueryContext(ctx, `SELECT provider,event_id,purchase_id,payment_id,status,reversed_minor FROM payment_events WHERE process_status IN ('received','failed') ORDER BY received_at LIMIT ?`, limit)
 	if err != nil {
 		return err
 	}
 	var events []Event
 	for rows.Next() {
 		var e Event
-		if err = rows.Scan(&e.Provider, &e.EventID, &e.PurchaseID, &e.PaymentID, &e.Status); err != nil {
+		if err = rows.Scan(&e.Provider, &e.EventID, &e.PurchaseID, &e.PaymentID, &e.Status, &e.ReversedMinor); err != nil {
 			rows.Close()
 			return err
 		}
@@ -164,14 +175,18 @@ func (s *Service) processOne(ctx context.Context, e Event) error {
 		}
 	} else {
 		amount := p.Credits - p.ReversedCredits
+		if e.ReversedMinor > 0 {
+			amount = (p.Credits*min(e.ReversedMinor, p.AmountMinor)+p.AmountMinor-1)/p.AmountMinor - p.ReversedCredits
+		}
 		if amount > 0 {
-			err = s.ledger.Refund(ctx, p.UserID, amount, e.Provider, "reversal "+p.ID, "reversal:"+e.Provider+":"+e.PaymentID)
+			err = s.ledger.Refund(ctx, p.UserID, amount, e.Provider, "reversal "+p.ID, "reversal:"+e.Provider+":"+e.EventID)
 			if errors.Is(err, credits.ErrDuplicateGrant) {
 				err = nil
 			}
 		}
 		if err == nil {
-			_, err = s.db.ExecContext(ctx, `UPDATE payment_purchases SET payment_id=?,status=?,reversed_credits=credits,reversed_at=?,updated_at=? WHERE id=?`, e.PaymentID, e.Status, now, now, p.ID)
+			newReversed := p.ReversedCredits + max(amount, 0)
+			_, err = s.db.ExecContext(ctx, `UPDATE payment_purchases SET payment_id=?,status=?,reversed_credits=?,reversed_at=?,updated_at=? WHERE id=?`, e.PaymentID, e.Status, newReversed, now, now, p.ID)
 		}
 	}
 	if err != nil {

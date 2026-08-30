@@ -46,7 +46,7 @@ func (a *Adapter) CreateCheckout(ctx context.Context, userID, sku string) (*Chec
 		return nil, err
 	}
 	mode, quantity, name := string(stripego.CheckoutSessionModePayment), int64(1), "AI credits"
-	params := &stripego.CheckoutSessionParams{Mode: &mode, SuccessURL: &a.cfg.SuccessURL, CancelURL: &a.cfg.CancelURL, ClientReferenceID: &p.ID, Metadata: map[string]string{"purchase_id": p.ID}, LineItems: []*stripego.CheckoutSessionLineItemParams{{Quantity: &quantity, PriceData: &stripego.CheckoutSessionLineItemPriceDataParams{Currency: &p.Currency, UnitAmount: &p.AmountMinor, ProductData: &stripego.CheckoutSessionLineItemPriceDataProductDataParams{Name: &name}}}}}
+	params := &stripego.CheckoutSessionParams{Mode: &mode, SuccessURL: &a.cfg.SuccessURL, CancelURL: &a.cfg.CancelURL, ClientReferenceID: &p.ID, Metadata: map[string]string{"purchase_id": p.ID}, PaymentIntentData: &stripego.CheckoutSessionPaymentIntentDataParams{Metadata: map[string]string{"purchase_id": p.ID}}, LineItems: []*stripego.CheckoutSessionLineItemParams{{Quantity: &quantity, PriceData: &stripego.CheckoutSessionLineItemPriceDataParams{Currency: &p.Currency, UnitAmount: &p.AmountMinor, ProductData: &stripego.CheckoutSessionLineItemPriceDataProductDataParams{Name: &name}}}}}
 	params.SetIdempotencyKey("credits-checkout:" + p.ID)
 	client := session.Client{B: stripego.GetBackend(stripego.APIBackend), Key: a.cfg.SecretKey}
 	cs, err := client.New(params)
@@ -97,7 +97,7 @@ func mapEvent(evt stripego.Event, hash string) (payments.Event, bool) {
 			return payments.Event{}, false
 		}
 		return payments.Event{Provider: "stripe", EventID: evt.ID, PaymentID: pid, PurchaseID: purchase, Status: "paid", PayloadHash: hash, OccurredAt: time.Now()}, true
-	case "charge.refunded", "charge.dispute.created":
+	case "charge.refunded":
 		var ch stripego.Charge
 		if json.Unmarshal(evt.Data.Raw, &ch) != nil || ch.PaymentIntent == nil {
 			return payments.Event{}, false
@@ -106,11 +106,20 @@ func mapEvent(evt stripego.Event, hash string) (payments.Event, bool) {
 		if purchase == "" {
 			return payments.Event{}, false
 		}
-		status := "refunded"
-		if evt.Type == "charge.dispute.created" {
-			status = "disputed"
+		return payments.Event{Provider: "stripe", EventID: evt.ID, PaymentID: ch.PaymentIntent.ID, PurchaseID: purchase, Status: "refunded", PayloadHash: hash, ReversedMinor: ch.AmountRefunded, OccurredAt: time.Now()}, true
+	case "charge.dispute.created":
+		var d stripego.Dispute
+		if json.Unmarshal(evt.Data.Raw, &d) != nil || d.PaymentIntent == nil {
+			return payments.Event{}, false
 		}
-		return payments.Event{Provider: "stripe", EventID: evt.ID, PaymentID: ch.PaymentIntent.ID, PurchaseID: purchase, Status: status, PayloadHash: hash, OccurredAt: time.Now()}, true
+		purchase := d.Metadata["purchase_id"]
+		if purchase == "" && d.Charge != nil {
+			purchase = d.Charge.Metadata["purchase_id"]
+		}
+		if purchase == "" {
+			return payments.Event{}, false
+		}
+		return payments.Event{Provider: "stripe", EventID: evt.ID, PaymentID: d.PaymentIntent.ID, PurchaseID: purchase, Status: "disputed", PayloadHash: hash, ReversedMinor: d.Amount, OccurredAt: time.Now()}, true
 	default:
 		return payments.Event{}, false
 	}
