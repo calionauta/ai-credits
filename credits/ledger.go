@@ -112,3 +112,56 @@ func (s *Service) adjust(ctx context.Context, userID string, amount int64,
 
 	return tx.Commit()
 }
+
+// GrantTx is like Grant but participates in an existing transaction tx.
+// The caller must commit/rollback tx. Idempotency is checked inside tx.
+func (s *Service) GrantTx(ctx context.Context, tx *sql.Tx, userID string, amount int64, source, reason, idempotencyKey string) error {
+	if amount <= 0 {
+		return errors.New("credits: grant amount must be > 0")
+	}
+	return s.adjustTx(ctx, tx, userID, amount, source, reason, idempotencyKey, "grant")
+}
+
+// RefundTx is like Refund but participates in an existing transaction.
+func (s *Service) RefundTx(ctx context.Context, tx *sql.Tx, userID string, amount int64, source, reason, idempotencyKey string) error {
+	if amount <= 0 {
+		return errors.New("credits: refund amount must be > 0")
+	}
+	return s.adjustTx(ctx, tx, userID, -amount, source, reason, idempotencyKey, "refund")
+}
+
+func (s *Service) adjustTx(ctx context.Context, tx *sql.Tx, userID string, amount int64, source, reason, idempotencyKey, typ string) error {
+	for name, value := range map[string]string{
+		"user_id": userID, "source": source, "reason": reason, "idempotency_key": idempotencyKey,
+	} {
+		if err := requireIdentifier(name, value); err != nil {
+			return err
+		}
+	}
+	var exists int
+	err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM credit_transactions WHERE idempotency_key = ?`, idempotencyKey).Scan(&exists)
+	if err != nil {
+		return err
+	}
+	if exists > 0 {
+		return ErrDuplicateGrant
+	}
+	id, err := newID()
+	if err != nil {
+		return err
+	}
+	now := s.cfg.Now().Unix()
+	meta, err := json.Marshal(map[string]string{"reason": reason})
+	if err != nil {
+		return err
+	}
+	ri, err := tx.ExecContext(ctx, `INSERT INTO credit_transactions (id, user_id, amount, type, source, idempotency_key, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, id, userID, amount, typ, source, idempotencyKey, string(meta), now)
+	if err != nil {
+		return err
+	}
+	if n, _ := ri.RowsAffected(); n == 0 {
+		return ErrDuplicateGrant
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO credit_accounts (user_id, balance, updated_at) VALUES (?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = credit_accounts.balance + excluded.balance, updated_at = excluded.updated_at`, userID, amount, now)
+	return err
+}

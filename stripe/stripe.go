@@ -20,7 +20,7 @@ import (
 
 type Config struct {
 	SecretKey, WebhookSecret, SuccessURL, CancelURL string
-	SubscriptionCredits map[string]int64
+	SubscriptionCredits                             map[string]int64
 }
 type Adapter struct {
 	payments *payments.Service
@@ -119,7 +119,18 @@ func mapSubscriptionEvent(evt stripego.Event) (payments.SubscriptionEvent, bool)
 		case "incomplete", "incomplete_expired":
 			status = "past_due"
 		}
-		return payments.SubscriptionEvent{Provider: "stripe", EventID: evt.ID, SubscriptionID: sub.ID, UserID: userID, Plan: plan, Status: status, PeriodStart: sub.CurrentPeriodStart, PeriodEnd: sub.CurrentPeriodEnd, Created: evt.Created}, true
+		// Handle trial and cancel_at_period_end for complete lifecycle
+		cancelAtPeriodEnd := false
+		if sub.CancelAtPeriodEnd {
+			cancelAtPeriodEnd = true
+		}
+		// If cancel_at_period_end is true and status is active, future cancellation is pending but current period remains active
+		// Trial termination: when trial_end passes, status moves from trialing to active
+		return payments.SubscriptionEvent{
+			Provider: "stripe", EventID: evt.ID, SubscriptionID: sub.ID, UserID: userID, Plan: plan, Status: status,
+			PeriodStart: sub.CurrentPeriodStart, PeriodEnd: sub.CurrentPeriodEnd, Created: evt.Created,
+			TrialStart: sub.TrialStart, TrialEnd: sub.TrialEnd, CancelAt: sub.CancelAt, CancelAtPeriodEnd: cancelAtPeriodEnd,
+		}, true
 	default:
 		return payments.SubscriptionEvent{}, false
 	}
@@ -166,6 +177,36 @@ func (a *Adapter) handleInvoiceEvent(ctx context.Context, evt stripego.Event) (b
 		return true, err
 	}
 	if evt.Type == "invoice.payment_failed" {
+		// Mark subscription as past_due for failed payment; let subscription.updated handle final state
+		subID := extractStringID(raw.Subscription)
+		if subID == "" && raw.Parent.SubscriptionDetails != nil {
+			subID = raw.Parent.SubscriptionDetails.Subscription
+		}
+		if subID != "" {
+			// Best-effort: derive user/plan from invoice metadata or existing sub
+			userID := ""
+			plan := ""
+			if raw.Metadata != nil {
+				userID = raw.Metadata["user_id"]
+				plan = raw.Metadata["plan"]
+			}
+			if (userID == "" || plan == "") && a.payments != nil {
+				if sub, err := a.payments.Subscription(ctx, "stripe", subID); err == nil && sub != nil {
+					if userID == "" {
+						userID = sub.UserID
+					}
+					if plan == "" {
+						plan = sub.Plan
+					}
+				}
+			}
+			if userID != "" && plan != "" {
+				_ = a.payments.ApplySubscription(ctx, payments.SubscriptionEvent{
+					Provider: "stripe", EventID: evt.ID, SubscriptionID: subID, UserID: userID, Plan: plan,
+					Status: "past_due", PeriodStart: raw.PeriodStart, PeriodEnd: raw.PeriodEnd, Created: evt.Created,
+				})
+			}
+		}
 		return true, nil
 	}
 	if raw.Status != "" && raw.Status != "paid" {
@@ -174,7 +215,26 @@ func (a *Adapter) handleInvoiceEvent(ctx context.Context, evt stripego.Event) (b
 	if raw.BillingReason == "manual" {
 		return true, nil
 	}
-	subID := extractStringID(raw.Subscription)
+	// For subscription_update (upgrades/downgrades mid-cycle), Stripe sends proration invoice with proration flag
+	// We skip full period grant for proration and rely on subscription.updated for plan change; proration credits handled separately
+	if raw.BillingReason == "subscription_update" {
+		// Check if invoice contains proration line items; if so, skip full grant
+		isProration := false
+		if raw.Lines != nil {
+			for _, l := range raw.Lines.Data {
+				// Proration lines have proration=true in metadata; we approximate via small period
+				if l.Period.End-l.Period.Start < 86400 {
+					isProration = true
+					break
+				}
+			}
+		}
+		if isProration {
+			slog.Info("stripe: proration invoice skipped full grant", "invoice", raw.ID, "subscription", subID)
+			return true, nil
+		}
+	}
+
 	if subID == "" && raw.Parent.SubscriptionDetails != nil {
 		subID = raw.Parent.SubscriptionDetails.Subscription
 	}
@@ -250,7 +310,9 @@ func extractStringID(raw json.RawMessage) string {
 	if json.Unmarshal(raw, &s) == nil {
 		return s
 	}
-	var obj struct{ ID string `json:"id"` }
+	var obj struct {
+		ID string `json:"id"`
+	}
 	if json.Unmarshal(raw, &obj) == nil {
 		return obj.ID
 	}

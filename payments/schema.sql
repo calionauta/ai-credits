@@ -41,5 +41,11 @@ CREATE TABLE IF NOT EXISTS payment_subscriptions (
   provider TEXT NOT NULL, subscription_id TEXT NOT NULL, user_id TEXT NOT NULL,
   plan TEXT NOT NULL, status TEXT NOT NULL, period_start INTEGER NOT NULL,
   period_end INTEGER NOT NULL, last_event_created INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL, PRIMARY KEY(provider,subscription_id)
+  updated_at INTEGER NOT NULL,
+  trial_start INTEGER DEFAULT 0,
+  trial_end INTEGER DEFAULT 0,
+  cancel_at INTEGER DEFAULT 0,
+  cancel_at_period_end INTEGER DEFAULT 0,
+  canceled_at INTEGER DEFAULT 0,
+  PRIMARY KEY(provider,subscription_id)
 );

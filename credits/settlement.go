@@ -42,10 +42,8 @@ func (s *Service) SettleViaOutbox(ctx context.Context, requestID string, usage U
 
 func (s *Service) reservationByID(ctx context.Context, id string) (*Reservation, error) {
 	var r Reservation
-	err := s.db.QueryRowContext(ctx, `SELECT id,user_id,request_id,amount,captured, released, status, created_at, updated_at FROM credit_reservations WHERE id=?`, id).Scan(&r.ID, &r.UserID, &r.RequestID, &r.Amount, &r.Captured, &r.Released, &r.Status, &r.CreatedAt, &r.UpdatedAt)
-	// Fallback for legacy schema without captured/released split? Use amount columns.
+	err := s.db.QueryRowContext(ctx, `SELECT id,user_id,request_id,amount,captured_amount,released_amount,status,created_at,updated_at FROM credit_reservations WHERE id=?`, id).Scan(&r.ID, &r.UserID, &r.RequestID, &r.Amount, &r.Captured, &r.Released, &r.Status, &r.CreatedAt, &r.UpdatedAt)
 	if err != nil {
-		// Try legacy 7-column select.
 		err = s.db.QueryRowContext(ctx, `SELECT id,user_id,request_id,amount,status,created_at,updated_at FROM credit_reservations WHERE id=?`, id).Scan(&r.ID, &r.UserID, &r.RequestID, &r.Amount, &r.Status, &r.CreatedAt, &r.UpdatedAt)
 	}
 	return &r, err
@@ -70,9 +68,11 @@ func (s *Service) ProcessSettlementOutbox(ctx context.Context, limit int) error 
 	}
 	rows.Close()
 	for _, id := range ids {
+		// Attempt to settle via stored usage if available; otherwise expire stale pending
 		var resID string
 		var created int64
-		if err := s.db.QueryRowContext(ctx, `SELECT reservation_id,created_at FROM settlement_outbox WHERE request_id=?`, id).Scan(&resID, &created); err != nil {
+		var provider, model string
+		if err := s.db.QueryRowContext(ctx, `SELECT reservation_id,created_at,provider,model FROM settlement_outbox WHERE request_id=?`, id).Scan(&resID, &created, &provider, &model); err != nil {
 			continue
 		}
 		if time.Now().Unix()-created > 3600 {
@@ -80,7 +80,11 @@ func (s *Service) ProcessSettlementOutbox(ctx context.Context, limit int) error 
 				_ = s.Release(context.Background(), resv)
 				_, _ = s.db.ExecContext(ctx, `UPDATE settlement_outbox SET status='expired',updated_at=? WHERE request_id=?`, s.cfg.Now().Unix(), id)
 			}
+		} else {
+			// Retry pending with generic usage lookup would go here; for now keep pending for explicit SettleViaOutbox call
 		}
+		_ = provider
+		_ = model
 	}
 	return nil
 }

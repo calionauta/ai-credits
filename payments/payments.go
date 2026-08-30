@@ -42,11 +42,16 @@ type Purchase struct {
 type SubscriptionEvent struct {
 	Provider, EventID, SubscriptionID, UserID, Plan, Status string
 	PeriodStart, PeriodEnd, Created                         int64
+	TrialStart, TrialEnd, CancelAt                          int64
+	CancelAtPeriodEnd                                       bool
 }
 
 type Subscription struct {
 	Provider, ID, UserID, Plan, Status string
 	PeriodStart, PeriodEnd             int64
+	TrialStart, TrialEnd, CancelAt     int64
+	CancelAtPeriodEnd                  bool
+	CanceledAt                         int64
 }
 
 type Service struct {
@@ -68,6 +73,16 @@ func New(db *sql.DB, ledger Ledger, catalog map[string]CatalogItem) (*Service, e
 	s := &Service{db: db, ledger: ledger, catalog: catalog, now: time.Now}
 	if _, err := db.Exec(schema); err != nil {
 		return nil, err
+	}
+	// Backfill new columns for existing DBs (idempotent ALTERs)
+	for _, ddl := range []string{
+		`ALTER TABLE payment_subscriptions ADD COLUMN trial_start INTEGER DEFAULT 0`,
+		`ALTER TABLE payment_subscriptions ADD COLUMN trial_end INTEGER DEFAULT 0`,
+		`ALTER TABLE payment_subscriptions ADD COLUMN cancel_at INTEGER DEFAULT 0`,
+		`ALTER TABLE payment_subscriptions ADD COLUMN cancel_at_period_end INTEGER DEFAULT 0`,
+		`ALTER TABLE payment_subscriptions ADD COLUMN canceled_at INTEGER DEFAULT 0`,
+	} {
+		_, _ = db.Exec(ddl)
 	}
 	_, _ = db.Exec(`INSERT INTO payments_schema_migrations(version,applied_at) VALUES(1,?) ON CONFLICT(version) DO NOTHING`, s.now().Unix())
 	return s, nil
@@ -173,11 +188,63 @@ func (s *Service) processOne(ctx context.Context, e Event) error {
 	if p.Provider != e.Provider || p.PaymentID != "" && p.PaymentID != e.PaymentID {
 		return s.fail(ctx, e, errors.New("payments: payment identity conflict"))
 	}
-	// Ledger + purchase + receipt are now grouped: ledger is idempotent, and
-	// purchase/event updates are committed in a single transaction after ledger.
-	// If ledger succeeds but purchase update fails, the event stays 'processing'
-	// and the next ProcessPending retry will see ErrDuplicateGrant (idempotent) and
-	// converge - preserving economic truth without double-grant.
+	// True atomic: ledger + purchase + event in one transaction when ledger is *credits.Service.
+	// Falls back to two-phase with idempotent retry when ledger is other implementation.
+	if cs, ok := s.ledger.(*credits.Service); ok {
+		tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+		if err != nil {
+			return s.fail(ctx, e, err)
+		}
+		defer tx.Rollback()
+		var ledgerErr error
+		if e.Status == "paid" {
+			ledgerErr = cs.GrantTx(ctx, tx, p.UserID, p.Credits, e.Provider, "purchase "+p.ID, "payment:"+e.Provider+":"+e.PaymentID)
+			if errors.Is(ledgerErr, credits.ErrDuplicateGrant) {
+				ledgerErr = nil
+			}
+		} else {
+			amount := p.Credits - p.ReversedCredits
+			if e.ReversedMinor > 0 {
+				amount = (p.Credits*min(e.ReversedMinor, p.AmountMinor)+p.AmountMinor-1)/p.AmountMinor - p.ReversedCredits
+			}
+			if amount > 0 {
+				ledgerErr = cs.RefundTx(ctx, tx, p.UserID, amount, e.Provider, "reversal "+p.ID, "reversal:"+e.Provider+":"+e.EventID)
+				if errors.Is(ledgerErr, credits.ErrDuplicateGrant) {
+					ledgerErr = nil
+				}
+			}
+			e.ReversedCredits = amount
+			if ledgerErr == nil && amount <= 0 {
+				// No ledger change needed, still need to mark purchase/event
+			}
+		}
+		if ledgerErr != nil {
+			_ = tx.Rollback()
+			return s.fail(ctx, e, ledgerErr)
+		}
+		if e.Status == "paid" {
+			if _, err = tx.ExecContext(ctx, `UPDATE payment_purchases SET payment_id=?,status='paid',fulfilled_at=?,updated_at=? WHERE id=?`, e.PaymentID, now, now, p.ID); err != nil {
+				return s.fail(ctx, e, err)
+			}
+		} else {
+			amount := e.ReversedCredits
+			if amount < 0 {
+				amount = 0
+			}
+			newReversed := p.ReversedCredits + max(amount, 0)
+			if _, err = tx.ExecContext(ctx, `UPDATE payment_purchases SET payment_id=?,status=?,reversed_credits=?,reversed_at=?,updated_at=? WHERE id=?`, e.PaymentID, e.Status, newReversed, now, now, p.ID); err != nil {
+				return s.fail(ctx, e, err)
+			}
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE payment_events SET process_status='applied',processed_at=?,last_error=NULL,lease_until=NULL WHERE provider=? AND event_id=?`, now, e.Provider, e.EventID); err != nil {
+			return s.fail(ctx, e, err)
+		}
+		if err = tx.Commit(); err != nil {
+			return s.fail(ctx, e, err)
+		}
+		return nil
+	}
+	// Fallback path for non-*credits.Service ledgers: two-phase with idempotent retry.
 	var ledgerErr error
 	if e.Status == "paid" {
 		ledgerErr = s.ledger.Grant(ctx, p.UserID, p.Credits, e.Provider, "purchase "+p.ID, "payment:"+e.Provider+":"+e.PaymentID)
@@ -195,13 +262,11 @@ func (s *Service) processOne(ctx context.Context, e Event) error {
 				ledgerErr = nil
 			}
 		}
-		// stash amount for purchase update below
 		e.ReversedCredits = amount
 	}
 	if ledgerErr != nil {
 		return s.fail(ctx, e, ledgerErr)
 	}
-	// Atomic purchase+event update: single transaction for the two local rows.
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
 		return s.fail(ctx, e, err)
@@ -252,13 +317,26 @@ func (s *Service) ApplySubscription(ctx context.Context, e SubscriptionEvent) er
 		return errors.New("payments: invalid subscription status")
 	}
 	now := s.now().Unix()
-	_, err := s.db.ExecContext(ctx, `INSERT INTO payment_subscriptions(provider,subscription_id,user_id,plan,status,period_start,period_end,last_event_created,updated_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(provider,subscription_id) DO UPDATE SET user_id=excluded.user_id,plan=excluded.plan,status=excluded.status,period_start=excluded.period_start,period_end=excluded.period_end,last_event_created=excluded.last_event_created,updated_at=excluded.updated_at WHERE excluded.last_event_created > payment_subscriptions.last_event_created`, e.Provider, e.SubscriptionID, e.UserID, e.Plan, e.Status, e.PeriodStart, e.PeriodEnd, e.Created, now)
+	canceledAt := int64(0)
+	if e.Status == "cancelled" {
+		canceledAt = now
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO payment_subscriptions(provider,subscription_id,user_id,plan,status,period_start,period_end,last_event_created,updated_at,trial_start,trial_end,cancel_at,cancel_at_period_end,canceled_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(provider,subscription_id) DO UPDATE SET user_id=excluded.user_id,plan=excluded.plan,status=excluded.status,period_start=excluded.period_start,period_end=excluded.period_end,last_event_created=excluded.last_event_created,updated_at=excluded.updated_at,trial_start=excluded.trial_start,trial_end=excluded.trial_end,cancel_at=excluded.cancel_at,cancel_at_period_end=excluded.cancel_at_period_end,canceled_at=excluded.canceled_at WHERE excluded.last_event_created > payment_subscriptions.last_event_created`, e.Provider, e.SubscriptionID, e.UserID, e.Plan, e.Status, e.PeriodStart, e.PeriodEnd, e.Created, now, e.TrialStart, e.TrialEnd, e.CancelAt, boolToInt(e.CancelAtPeriodEnd), canceledAt)
 	return err
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 func (s *Service) Subscription(ctx context.Context, provider, id string) (*Subscription, error) {
 	var sub Subscription
-	err := s.db.QueryRowContext(ctx, `SELECT provider,subscription_id,user_id,plan,status,period_start,period_end FROM payment_subscriptions WHERE provider=? AND subscription_id=?`, provider, id).Scan(&sub.Provider, &sub.ID, &sub.UserID, &sub.Plan, &sub.Status, &sub.PeriodStart, &sub.PeriodEnd)
+	var cancelAtPeriodEnd int
+	err := s.db.QueryRowContext(ctx, `SELECT provider,subscription_id,user_id,plan,status,period_start,period_end,COALESCE(trial_start,0),COALESCE(trial_end,0),COALESCE(cancel_at,0),COALESCE(cancel_at_period_end,0),COALESCE(canceled_at,0) FROM payment_subscriptions WHERE provider=? AND subscription_id=?`, provider, id).Scan(&sub.Provider, &sub.ID, &sub.UserID, &sub.Plan, &sub.Status, &sub.PeriodStart, &sub.PeriodEnd, &sub.TrialStart, &sub.TrialEnd, &sub.CancelAt, &cancelAtPeriodEnd, &sub.CanceledAt)
+	sub.CancelAtPeriodEnd = cancelAtPeriodEnd == 1
 	return &sub, err
 }
 
@@ -310,4 +388,3 @@ func (s *Service) ReconcileWithStripe(ctx context.Context, stripeSecret string) 
 	// handle the returned issues as alerts.
 	return issues, nil
 }
-
