@@ -142,4 +142,33 @@ Design reference (schema, pricing, domain rules, BYOK relay, security,
 deliberate simplifications): [`docs/architecture.md`](docs/architecture.md).
 Optional provider-neutral payments and Stripe integration: [`docs/payments.md`](docs/payments.md).
 
+## Testing
+
+```bash
+go test -race ./...          # unit + synthetic webhook tests (no secrets)
+gofumpt -l .                 # formatting
+golangci-lint run ./...      # lint gate
+govulncheck ./...            # vuln scan
+```
+
+Synthetic Stripe webhooks (`webhook.GenerateTestSignedPayload`) cover `checkout.session.completed`, `charge.refunded`, `charge.dispute.created`, and `customer.subscription.*`/`invoice.*` without network.
+
+### E2E with real Stripe (optional, for contributors)
+
+Integration tests that hit the Stripe test-mode API are **opt-in** and require test keys. They are not needed for normal library use.
+
+1. Create a Stripe test account and get `STRIPE_SECRET_KEY` (`sk_test_...`) and `STRIPE_WEBHOOK_SECRET` (`whsec_...`).
+2. Install `stripe-cli` and login: `stripe login`.
+3. Run E2E tests:
+
+```bash
+export STRIPE_SECRET_KEY=sk_test_...
+export STRIPE_WEBHOOK_SECRET=whsec_...
+go test -tags=e2e -run TestStripeE2E -count=1 ./stripe -v
+# or trigger a real invoice event:
+stripe trigger invoice.paid --add invoice:metadata[user_id]=u_test --add invoice:metadata[plan]=pro
+```
+
+Without `STRIPE_SECRET_KEY`, `go test ./...` skips the `e2e` tag and still passes. See `stripe/stripe_test.go` for synthetic tests and `e2e/` for real-API tests.
+
 - [MIT](./LICENSE)
