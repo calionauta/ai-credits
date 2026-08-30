@@ -1,5 +1,20 @@
 package credits
 
+// schemaV1SQL is immutable: it is the schema shipped by migration 1. Future
+// changes belong in a new migration, never in this string.
+const schemaV1SQL = `
+PRAGMA foreign_keys = ON;
+CREATE TABLE IF NOT EXISTS credit_accounts (user_id TEXT PRIMARY KEY,balance INTEGER NOT NULL DEFAULT 0,updated_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS credit_transactions (id TEXT PRIMARY KEY,user_id TEXT NOT NULL,amount INTEGER NOT NULL,type TEXT NOT NULL,source TEXT NOT NULL,reference_id TEXT,idempotency_key TEXT UNIQUE,metadata TEXT,created_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_credit_tx_user ON credit_transactions(user_id,created_at);
+CREATE TABLE IF NOT EXISTS credit_reservations (id TEXT PRIMARY KEY,user_id TEXT NOT NULL,request_id TEXT UNIQUE NOT NULL,amount INTEGER NOT NULL,captured_amount INTEGER NOT NULL DEFAULT 0,released_amount INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS llm_usage (id TEXT PRIMARY KEY,request_id TEXT UNIQUE NOT NULL,user_id TEXT NOT NULL,provider TEXT NOT NULL,model TEXT NOT NULL,billing_mode TEXT NOT NULL,input_tokens INTEGER NOT NULL DEFAULT 0,output_tokens INTEGER NOT NULL DEFAULT 0,cached_input_tokens INTEGER NOT NULL DEFAULT 0,reasoning_tokens INTEGER NOT NULL DEFAULT 0,estimated_cost_microunits INTEGER,actual_cost_microunits INTEGER,credits_charged INTEGER NOT NULL DEFAULT 0,pricing_version TEXT NOT NULL,created_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_llm_usage_user ON llm_usage(user_id,created_at);
+CREATE INDEX IF NOT EXISTS idx_llm_usage_model ON llm_usage(model);
+CREATE TABLE IF NOT EXISTS byok_credentials (user_id TEXT NOT NULL,provider TEXT NOT NULL,encrypted_key BLOB NOT NULL,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,PRIMARY KEY(user_id,provider));
+CREATE TABLE IF NOT EXISTS subscriptions (user_id TEXT PRIMARY KEY,plan TEXT NOT NULL,status TEXT NOT NULL,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL);
+`
+
 // schemaSQL is the current full schema used for fresh DB Ensures and idempotent Exec after migrations.
 const schemaSQL = `
 PRAGMA foreign_keys = ON;
