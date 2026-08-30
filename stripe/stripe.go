@@ -176,14 +176,20 @@ func (a *Adapter) handleInvoiceEvent(ctx context.Context, evt stripego.Event) (b
 	if err := json.Unmarshal(evt.Data.Raw, &raw); err != nil {
 		return true, err
 	}
-	if evt.Type == "invoice.payment_failed" {
-		// Mark subscription as past_due for failed payment; let subscription.updated handle final state
-		subID := extractStringID(raw.Subscription)
-		if subID == "" && raw.Parent.SubscriptionDetails != nil {
-			subID = raw.Parent.SubscriptionDetails.Subscription
+	subID := extractStringID(raw.Subscription)
+	if subID == "" && raw.Parent.SubscriptionDetails != nil {
+		subID = raw.Parent.SubscriptionDetails.Subscription
+	}
+	if subID == "" && raw.Lines != nil {
+		for _, l := range raw.Lines.Data {
+			if l.Parent != nil && l.Parent.SubscriptionItemDetails != nil && l.Parent.SubscriptionItemDetails.Subscription != "" {
+				subID = l.Parent.SubscriptionItemDetails.Subscription
+				break
+			}
 		}
+	}
+	if evt.Type == "invoice.payment_failed" {
 		if subID != "" {
-			// Best-effort: derive user/plan from invoice metadata or existing sub
 			userID := ""
 			plan := ""
 			if raw.Metadata != nil {
@@ -215,14 +221,10 @@ func (a *Adapter) handleInvoiceEvent(ctx context.Context, evt stripego.Event) (b
 	if raw.BillingReason == "manual" {
 		return true, nil
 	}
-	// For subscription_update (upgrades/downgrades mid-cycle), Stripe sends proration invoice with proration flag
-	// We skip full period grant for proration and rely on subscription.updated for plan change; proration credits handled separately
 	if raw.BillingReason == "subscription_update" {
-		// Check if invoice contains proration line items; if so, skip full grant
 		isProration := false
 		if raw.Lines != nil {
 			for _, l := range raw.Lines.Data {
-				// Proration lines have proration=true in metadata; we approximate via small period
 				if l.Period.End-l.Period.Start < 86400 {
 					isProration = true
 					break
@@ -232,18 +234,6 @@ func (a *Adapter) handleInvoiceEvent(ctx context.Context, evt stripego.Event) (b
 		if isProration {
 			slog.Info("stripe: proration invoice skipped full grant", "invoice", raw.ID, "subscription", subID)
 			return true, nil
-		}
-	}
-
-	if subID == "" && raw.Parent.SubscriptionDetails != nil {
-		subID = raw.Parent.SubscriptionDetails.Subscription
-	}
-	if subID == "" && raw.Lines != nil {
-		for _, l := range raw.Lines.Data {
-			if l.Parent != nil && l.Parent.SubscriptionItemDetails != nil && l.Parent.SubscriptionItemDetails.Subscription != "" {
-				subID = l.Parent.SubscriptionItemDetails.Subscription
-				break
-			}
 		}
 	}
 	if subID == "" {
