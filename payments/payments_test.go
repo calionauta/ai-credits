@@ -6,8 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/calionauta/ai-credits/credits"
 	_ "modernc.org/sqlite"
+
+	"github.com/calionauta/ai-credits/credits"
 )
 
 func TestWorkerRecoversExpiredProcessingLease(t *testing.T) {

@@ -12,10 +12,11 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/calionauta/ai-credits/payments"
 	stripego "github.com/stripe/stripe-go/v80"
 	"github.com/stripe/stripe-go/v80/checkout/session"
 	"github.com/stripe/stripe-go/v80/webhook"
+
+	"github.com/calionauta/ai-credits/payments"
 )
 
 type Config struct {
@@ -136,7 +137,7 @@ func mapSubscriptionEvent(evt stripego.Event) (payments.SubscriptionEvent, bool)
 	}
 }
 
-func (a *Adapter) handleInvoiceEvent(ctx context.Context, evt stripego.Event) (bool, error) {
+func (a *Adapter) handleInvoiceEvent(ctx context.Context, evt stripego.Event) (bool, error) { //nolint:gocognit,gocyclo
 	switch evt.Type {
 	case "invoice.paid", "invoice.payment_failed":
 	default:

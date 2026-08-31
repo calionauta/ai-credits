@@ -172,7 +172,7 @@ func (s *Service) ProcessPending(ctx context.Context, limit int) error {
 	return nil
 }
 
-func (s *Service) processOne(ctx context.Context, e Event) error {
+func (s *Service) processOne(ctx context.Context, e Event) error { //nolint:gocognit,gocyclo
 	now := s.now().Unix()
 	res, err := s.db.ExecContext(ctx, `UPDATE payment_events SET process_status='processing',attempt_count=attempt_count+1,last_error=NULL,lease_until=? WHERE provider=? AND event_id=? AND process_status IN ('received','failed')`, now+30, e.Provider, e.EventID)
 	if err != nil {
@@ -195,7 +195,7 @@ func (s *Service) processOne(ctx context.Context, e Event) error {
 		if err != nil {
 			return s.fail(ctx, e, err)
 		}
-		defer tx.Rollback()
+		defer func() { _ = tx.Rollback() }() //nolint:errcheck
 		var ledgerErr error
 		if e.Status == "paid" {
 			ledgerErr = cs.GrantTx(ctx, tx, p.UserID, p.Credits, e.Provider, "purchase "+p.ID, "payment:"+e.Provider+":"+e.PaymentID)
@@ -271,7 +271,7 @@ func (s *Service) processOne(ctx context.Context, e Event) error {
 	if err != nil {
 		return s.fail(ctx, e, err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }() //nolint:errcheck
 	if e.Status == "paid" {
 		if _, err = tx.ExecContext(ctx, `UPDATE payment_purchases SET payment_id=?,status='paid',fulfilled_at=?,updated_at=? WHERE id=?`, e.PaymentID, now, now, p.ID); err != nil {
 			return s.fail(ctx, e, err)

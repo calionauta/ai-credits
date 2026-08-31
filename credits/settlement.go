@@ -77,7 +77,7 @@ func (s *Service) ProcessSettlementOutbox(ctx context.Context, limit int) error 
 		}
 		if time.Now().Unix()-created > 3600 {
 			if resv, err := s.reservationByID(ctx, resID); err == nil && resv.Status == "reserved" {
-				_ = s.Release(context.Background(), resv)
+				_ = s.Release(ctx, resv)
 				_, _ = s.db.ExecContext(ctx, `UPDATE settlement_outbox SET status='expired',updated_at=? WHERE request_id=?`, s.cfg.Now().Unix(), id)
 			}
 		} else {

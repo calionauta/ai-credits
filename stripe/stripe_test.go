@@ -9,10 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/calionauta/ai-credits/credits"
-	"github.com/calionauta/ai-credits/payments"
 	"github.com/stripe/stripe-go/v80/webhook"
 	_ "modernc.org/sqlite"
+
+	"github.com/calionauta/ai-credits/credits"
+	"github.com/calionauta/ai-credits/payments"
 )
 
 func TestSubscriptionWebhookMapsPeriodAndStatus(t *testing.T) {
