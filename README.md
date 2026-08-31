@@ -8,7 +8,7 @@ SQLite-backed credits/billing + BYOK for AI applications.
 > and `golang.org/x/crypto`; `stripe-go` is used by the payments/stripe
 > packages, not the core `credits` package.
 
-Two billing modes:
+## Billing modes
 
 - **managed** — the app bills the user for its own LLM calls: a JSON pricing
   engine prices each call (`Cost`/`Credits`), `Reserve` holds a conservative
@@ -17,6 +17,8 @@ Two billing modes:
 - **byok** — each user brings their own provider key; the relay meters the
   upstream call into `llm_usage` for analytics/throttling but charges nothing
   (`credits_charged=0`).
+
+## Features
 
 - Immutable ledger + materialized balance (`balance == SUM(ledger)` invariant)
 - JSON-configurable pricing engine (`Cost`, `EstimateMax`, `Credits`)
