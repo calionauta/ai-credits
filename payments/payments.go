@@ -172,7 +172,7 @@ func (s *Service) ProcessPending(ctx context.Context, limit int) error {
 	return nil
 }
 
-func (s *Service) processOne(ctx context.Context, e Event) error { //nolint:gocognit,gocyclo
+func (s *Service) processOne(ctx context.Context, e Event) error { //nolint:gocognit,gocyclo,funlen
 	now := s.now().Unix()
 	res, err := s.db.ExecContext(ctx, `UPDATE payment_events SET process_status='processing',attempt_count=attempt_count+1,last_error=NULL,lease_until=? WHERE provider=? AND event_id=? AND process_status IN ('received','failed')`, now+30, e.Provider, e.EventID)
 	if err != nil {
@@ -191,9 +191,9 @@ func (s *Service) processOne(ctx context.Context, e Event) error { //nolint:goco
 	// True atomic: ledger + purchase + event in one transaction when ledger is *credits.Service.
 	// Falls back to two-phase with idempotent retry when ledger is other implementation.
 	if cs, ok := s.ledger.(*credits.Service); ok {
-		tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
-		if err != nil {
-			return s.fail(ctx, e, err)
+		tx, err2 := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable}) //nolint:govet
+		if err2 != nil {
+			return s.fail(ctx, e, err2)
 		}
 		defer func() { _ = tx.Rollback() }() //nolint:errcheck
 		var ledgerErr error

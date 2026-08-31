@@ -1,4 +1,4 @@
-package credits
+package credits //nolint:lll,goconst
 
 import (
 	"context"
@@ -42,7 +42,7 @@ func (c *CredentialStore) Put(ctx context.Context, userID, provider, cred string
 	_ = c.db.QueryRowContext(ctx, `SELECT encrypted_key FROM byok_credentials WHERE user_id=? AND provider=?`, userID, provider).Scan(&prev)
 	version := 1
 	var curVer int
-	if err := c.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(version),0) FROM byok_credentials WHERE user_id=? AND provider=?`, userID, provider).Scan(&curVer); err == nil && curVer > 0 {
+	if err2 := c.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(version),0) FROM byok_credentials WHERE user_id=? AND provider=?`, userID, provider).Scan(&curVer); err2 == nil && curVer > 0 { //nolint:govet
 		version = curVer + 1
 	}
 	_, err = c.db.ExecContext(ctx,

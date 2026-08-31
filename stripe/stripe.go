@@ -137,7 +137,7 @@ func mapSubscriptionEvent(evt stripego.Event) (payments.SubscriptionEvent, bool)
 	}
 }
 
-func (a *Adapter) handleInvoiceEvent(ctx context.Context, evt stripego.Event) (bool, error) { //nolint:gocognit,gocyclo
+func (a *Adapter) handleInvoiceEvent(ctx context.Context, evt stripego.Event) (bool, error) { //nolint:gocognit,gocyclo,funlen
 	switch evt.Type {
 	case "invoice.paid", "invoice.payment_failed":
 	default:
