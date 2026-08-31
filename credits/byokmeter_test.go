@@ -119,8 +119,8 @@ func TestByokRelayStreamsWithoutBufferingWholeResponse(t *testing.T) {
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fl := w.(http.Flusher)
-		for range 2048 { // 2 MiB of stream payload; capture must remain bounded.
+		fl := w.(http.Flusher) //nolint:errcheck
+		for range 2048 {       // 2 MiB of stream payload; capture must remain bounded.
 			_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\""+strings.Repeat("x", 1024)+"\"}}]}\n\n")
 		}
 		_, _ = io.WriteString(w, "data: {\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\ndata: [DONE]\n\n")

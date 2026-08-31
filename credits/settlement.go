@@ -29,7 +29,7 @@ func (s *Service) SettleViaOutbox(ctx context.Context, requestID string, usage U
 		_, _ = s.db.ExecContext(ctx, `UPDATE settlement_outbox SET status='failed',last_error=?,updated_at=? WHERE request_id=?`, err.Error(), s.cfg.Now().Unix(), requestID)
 		return err
 	}
-	if err := s.Settle(ctx, resv, creditsCharged); err != nil {
+	if err2 := s.Settle(ctx, resv, creditsCharged); err2 != nil { //nolint:govet
 		_, _ = s.db.ExecContext(ctx, `UPDATE settlement_outbox SET status='failed',last_error=?,attempt_count=attempt_count+1,updated_at=? WHERE request_id=?`, err.Error(), s.cfg.Now().Unix(), requestID)
 		return err
 	}

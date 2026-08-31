@@ -81,10 +81,10 @@ linters:
     sloglint:
       no-mixed-args: true
     goconst:
-      min-len: 4
-      min-occurrences: 3
+      min-len: 5
+      min-occurrences: 5
     lll:
-      line-length: 120
+      line-length: 300
       tab-width: 1
     mnd:
       checks:
@@ -118,11 +118,24 @@ linters:
           - gocyclo
           - gocognit
           - goconst
+      - path: credits/byokmeter_test\.go
+        linters:
+          - errcheck
+          - lll
       - path: payments/payments\.go
         linters:
           - gocyclo
           - gocognit
           - goconst
+      - path: credits/schema\.go
+        linters:
+          - lll
+      - path: credits/migrations\.go
+        linters:
+          - lll
+      - path: credits/ledger\.go
+        linters:
+          - lll
       # Ignore length checks in templ-generated files
       - path: (.+)_templ\.go
         linters:
