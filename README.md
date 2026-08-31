@@ -1,9 +1,14 @@
 # ai-credits
 
-SQLite-backed credits/billing + BYOK for AI applications. Zero deps beyond
-`golang.org/x/crypto`.
+SQLite-backed credits/billing + BYOK for AI applications.
 
-The library supports two billing modes:
+> **Scope note**: since v0.4.1 the library also ships optional provider-
+> neutral payments and a Stripe adapter in the same module (`payments`,
+> `stripe` packages). The **core** ledger only depends on `modernc.org/sqlite`
+> and `golang.org/x/crypto`; `stripe-go` is used by the payments/stripe
+> packages, not the core `credits` package.
+
+Two billing modes:
 
 - **managed** — the app bills the user for its own LLM calls: a JSON pricing
   engine prices each call (`Cost`/`Credits`), `Reserve` holds a conservative
@@ -19,9 +24,14 @@ The library supports two billing modes:
 - Lazy idempotent monthly grants (no scheduler)
 - Subscription lifecycle: plan status (active/paused/cancelled) gates the
   monthly grant (entitlement), `SetSubscription`/`CancelSubscription`
+- **Durable settlement outbox**: `EnqueueSettlement` / `SettleViaOutbox` /
+  `ProcessSettlementOutbox` keep a settle alive across an app crash
 - BYOK: XChaCha20-Poly1305-encrypted credential store + in-process relay
   that auto-meters every upstream call into `llm_usage` (billing_mode=byok)
 - Reconcile (orphan reservation expiry + balance/ledger drift report)
+- Payment integrations (optional): `payments` package + `stripe` adapter
+  for checkout, event worker with backoff/dead-letter, and
+  `invoice.paid` auto-grant (`docs/payments.md`)
 
 ## Install
 
@@ -67,7 +77,8 @@ func main() {
 	rsv, _ := svc.Reserve(ctx, user, "req-1", max)
 
 	// ... run the LLM call, then:
-	usage := credits.Usage{Model: "gpt-4o-mini", BillingMode: "managed",
+	usage := credits.Usage{RequestID: "req-1", Model: "gpt-4o-mini",
+		BillingMode: "managed", UserID: user, Provider: "openai",
 		InputTokens: 1500, OutputTokens: 412}
 	// Settle takes CREDITS (not micro-units). Convert the cost to credits
 	// first — passing micro-units would look like a huge over-charge and
@@ -76,6 +87,9 @@ func main() {
 	if err := svc.Settle(ctx, rsv, creditsUsed); err != nil {
 		log.Fatal(err)
 	}
+	// RecordUsageRetry requires RequestID + UserID + Provider + Model; omitting
+	// any makes the audit row silently fail (validateUsage). Here RequestID
+	// matches the reserve so the audit links back to the charge.
 	if err := svc.RecordUsageRetry(ctx, usage); err != nil {
 		log.Printf("usage audit pending for req-1: %v", err)
 	}
@@ -110,6 +124,22 @@ bills the user for it.
 
 Only calls that actually ran get charged; `Release(r)` returns an unused reserve.
 The `balance == SUM(ledger)` invariant holds across all of it.
+
+**Durable settlement (recommended)**: if the provider call returns before you
+persist the settle (e.g. in a long-lived process), a crash between *provider
+responded* and *ledger settled* loses money. Use the outbox instead of the
+plain `Settle`+`RecordUsageRetry` pairing:
+
+1. `EnqueueSettlement(ctx, requestID, userID, reservationID, provider, model)`
+   right after `Reserve` (idempotent row keyed by `request_id`),
+2. `SettleViaOutbox(ctx, requestID, usage)` after the provider returns,
+3. run `ProcessSettlementOutbox(ctx)` on a timer (e.g. every minute) to
+   retry/expire anything left pending after a crash.
+
+The settle is persisted (via `request_id`) so a restart resumes it instead of
+dropping the charge. `RecordUsageRetry` still logs the audit row; keep
+`usage.BillingMode` consistent with the charge (`managed` when it debits
+credits — `byok` usage must carry `credits_charged=0`).
 
 ## BYOK (bring your own key)
 
