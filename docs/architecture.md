@@ -77,6 +77,8 @@ CREATE TABLE IF NOT EXISTS byok_credentials (
     user_id       TEXT NOT NULL,
     provider      TEXT NOT NULL,               -- key of the provider->base map
     encrypted_key BLOB NOT NULL,               -- nonce || XChaCha20-Poly1305(apiKey)
+    version       INTEGER NOT NULL DEFAULT 1,  -- key rotation version (migration v3)
+    previous_key  BLOB,                        -- last rotated key, for in-flight lookups
     created_at    INTEGER NOT NULL,
     updated_at    INTEGER NOT NULL,
     PRIMARY KEY (user_id, provider)
@@ -89,10 +91,27 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS settlement_outbox (   -- migration v3
+    request_id     TEXT PRIMARY KEY,
+    user_id        TEXT NOT NULL,
+    reservation_id TEXT NOT NULL,
+    provider       TEXT NOT NULL,
+    model          TEXT NOT NULL,
+    status         TEXT NOT NULL DEFAULT 'pending',  -- pending|settled|failed|expired
+    attempt_count  INTEGER NOT NULL DEFAULT 0,
+    last_error     TEXT,
+    created_at     INTEGER NOT NULL,
+    updated_at     INTEGER NOT NULL
+);
 ```
 
 - Timestamps are integer unix. The lib writes `time.Now().Unix()` (or `cfg.Now`).
 - `credit_accounts` is the materialized cache; `credit_transactions` is truth.
+- Extra indexes added by migrations: `idx_credit_reservations_stale` (v2),
+  `idx_settlement_outbox_pending` (v3). The schema auto-versions via
+  `credits_schema_migrations`; a fresh DB ends at the same final shape
+  (fresh DDL + v3 migration both applied).
 
 ## Pricing
 
