@@ -17,6 +17,38 @@ e o projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
   `(bool, error)`; novo `Credits(ctx, usage)`). Documentada a política de
   under-reserve (§6.3.1) e a mitigação no app.
 
+## [v0.4.1] - 2026-08-31
+
+### Added
+- **Payment integrations no módulo raiz**: `payments` e `stripe` agora fazem
+  parte do módulo principal (antes viviam em branches/matriz separada), com
+  checkout, worker de eventos com backoff e dead-letter, e reconciliação.
+- **Durable settlement outbox**: `EnqueueSettlement` / `SettleViaOutbox` /
+  `ProcessSettlementOutbox` — o settle sobrevive a crash do app após o
+  provider retornar (`.request_id` idempotente).
+- **`invoice.paid` auto-grant**: o adaptador Stripe concede créditos do ciclo
+  automaticamente ao receber o webhook (inclui proration skip e
+  `payment_failed` → `past_due`).
+- **BYOK timeout + rotação**: credenciais com `expires_at`/rotação e
+  boundary hardening do relay.
+- `OpenSQLite`, `NewRequestID`, `EstimateTokens` (movidos de gogogo/ensaiter).
+
+### Changed
+- **Webhook de invoice usa `stripego.Invoice` do SDK oficial**: o struct JSON
+  manual de ~40 linhas + `extractStringID` foram substituídos pelo tipo do
+  SDK; mantido um `invoiceShadow` pequeno só para os campos v2 não modelados
+  (subscription_details / parent.subscription_item_details).
+- DRY: duplicação das integrações removida; settlement e billing coexistem
+  num único `settlement.go`.
+
+### Fixed
+- **43 falhas de golangci-lint** (noctx, mnd, modernize, govet, revive,
+  gofumpt, nolintlint, lll) em `payments/`, `credits/`, `stripe/`.
+- **Nil deref em `SettleViaOutbox`**: o erro usava `err.Error()` após `err`
+  ser `nil` (deveria ser `err2`).
+- **Colunas do settlement corrigidas** e ordem do `subID` nas queries de
+  proration.
+
 ## [v0.4.0] - 2026-08-29
 
 ### Fixed
@@ -82,18 +114,6 @@ e o projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 - (v0.1.1) README example usava micro-units no `Settle` (devia ser credits) e
   `sql.Open` sem pragmas WAL — trocado para `OpenSQLite` + `svc.Credits`.
 
-## [Unreleased]
-
-### Added
-- `OpenSQLite(driverName, path)` — abre uma conexão SQLite com os pragmas
-  que um ledger de billing precisa em uma segunda conexão ao DB de um app
-  (WAL + busy_timeout + foreign keys + NORMAL). Elimina a duplicação de
-  "abrir a segunda conexão do ledger" que existia em gogogo e ensaiter.
-- `NewRequestID()` — ID aleatório (crypto/rand, 32 hex) para chaves de
-  reserva/uso/ledger, sem depender de `google/uuid` nos apps.
-- `EstimateTokens(string)` — estimativa grosseira de tokens de entrada
-  (4 chars/token) só para dimensionar a reserva conservadora.
-
 ## [v0.1.0] - 2026-08-28
 
 ### Fixed
@@ -111,7 +131,8 @@ e o projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
   reconcile (detecção de drift + expiração de reservas obsoletas), store de
   credenciais BYOK (XChaCha20-Poly1305) + relay HTTP.
 
-[Unreleased]: https://github.com/calionauta/ai-credits/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/calionauta/ai-credits/compare/v0.4.1...HEAD
+[v0.4.1]: https://github.com/calionauta/ai-credits/releases/tag/v0.4.1
 [v0.4.0]: https://github.com/calionauta/ai-credits/releases/tag/v0.4.0
 [v0.3.0]: https://github.com/calionauta/ai-credits/releases/tag/v0.3.0
 [v0.2.0]: https://github.com/calionauta/ai-credits/releases/tag/v0.2.0
