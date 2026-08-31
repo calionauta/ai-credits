@@ -30,7 +30,7 @@ func TestWorkerRecoversExpiredProcessingLease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = db.Exec(`INSERT INTO payment_events(provider,event_id,purchase_id,payment_id,status,process_status,received_at,lease_until) VALUES('stripe','evt_restart',?,'pi_restart','paid','processing',1,1)`, p.ID)
+	_, err = db.ExecContext(ctx, `INSERT INTO payment_events(provider,event_id,purchase_id,payment_id,status,process_status,received_at,lease_until) VALUES('stripe','evt_restart',?,'pi_restart','paid','processing',1,1)`, p.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +42,7 @@ func TestWorkerRecoversExpiredProcessingLease(t *testing.T) {
 		t.Fatalf("balance=%d err=%v", balance, err)
 	}
 	var status string
-	if err = db.QueryRow(`SELECT process_status FROM payment_events WHERE event_id='evt_restart'`).Scan(&status); err != nil {
+	if err = db.QueryRowContext(ctx, `SELECT process_status FROM payment_events WHERE event_id='evt_restart'`).Scan(&status); err != nil {
 		t.Fatal(err)
 	}
 	if status != "applied" {
@@ -146,7 +146,7 @@ func TestReconcileClassifiesPendingState(t *testing.T) {
 	svc, _ := New(db, ledger, map[string]CatalogItem{"x": {Credits: 10, Currency: "usd", AmountMinor: 100}})
 	svc.now = func() time.Time { return time.Unix(7200, 0) }
 	p, _ := svc.CreatePurchase(context.Background(), "stripe", "u", "x")
-	_, _ = db.Exec(`UPDATE payment_purchases SET created_at=1 WHERE id=?`, p.ID)
+	_, _ = db.ExecContext(context.Background(), `UPDATE payment_purchases SET created_at=1 WHERE id=?`, p.ID)
 	issues, err := svc.Reconcile(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -203,9 +203,9 @@ func TestWorkerDeadLetter(t *testing.T) {
 	ctx := context.Background()
 	p, _ := svc.CreatePurchase(ctx, "stripe", "u", "x")
 	// Insert failed event with high attempt_count
-	_, _ = db.Exec(`INSERT INTO payment_events(provider,event_id,purchase_id,payment_id,status,process_status,received_at,attempt_count,lease_until) VALUES('stripe','evt_dl',?,'pi_dl','paid','failed',1,10,999999)`, p.ID)
+	_, _ = db.ExecContext(ctx, `INSERT INTO payment_events(provider,event_id,purchase_id,payment_id,status,process_status,received_at,attempt_count,lease_until) VALUES('stripe','evt_dl',?,'pi_dl','paid','failed',1,10,999999)`, p.ID)
 	called := false
-	w := NewWorker(svc, WorkerConfig{MaxAttempts: 5, DeadLetter: func(ctx context.Context, e Event, err error) { called = true }})
+	w := NewWorker(svc, WorkerConfig{MaxAttempts: 5, DeadLetter: func(_ context.Context, _ Event, _ error) { called = true }})
 	w.checkDeadLetter(ctx)
 	if !called {
 		t.Fatal("expected dead-letter callback")
@@ -252,7 +252,7 @@ func TestAtomicGrantTx(t *testing.T) {
 	}
 	// verify purchase and event committed atomically
 	var status string
-	_ = db.QueryRow(`SELECT status FROM payment_purchases WHERE id=?`, p.ID).Scan(&status)
+	_ = db.QueryRowContext(ctx, `SELECT status FROM payment_purchases WHERE id=?`, p.ID).Scan(&status)
 	if status != "paid" {
 		t.Fatalf("purchase status=%s", status)
 	}

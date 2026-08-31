@@ -19,6 +19,9 @@ import (
 	"github.com/calionauta/ai-credits/payments"
 )
 
+// prorationGraceSeconds is the minimum invoice period length considered a full billing cycle.
+const prorationGraceSeconds = int64(86400)
+
 type Config struct {
 	SecretKey, WebhookSecret, SuccessURL, CancelURL string
 	SubscriptionCredits                             map[string]int64
@@ -49,7 +52,22 @@ func (a *Adapter) CreateCheckout(ctx context.Context, userID, sku string) (*Chec
 		return nil, err
 	}
 	mode, quantity, name := string(stripego.CheckoutSessionModePayment), int64(1), "AI credits"
-	params := &stripego.CheckoutSessionParams{Mode: &mode, SuccessURL: &a.cfg.SuccessURL, CancelURL: &a.cfg.CancelURL, ClientReferenceID: &p.ID, Metadata: map[string]string{"purchase_id": p.ID}, PaymentIntentData: &stripego.CheckoutSessionPaymentIntentDataParams{Metadata: map[string]string{"purchase_id": p.ID}}, LineItems: []*stripego.CheckoutSessionLineItemParams{{Quantity: &quantity, PriceData: &stripego.CheckoutSessionLineItemPriceDataParams{Currency: &p.Currency, UnitAmount: &p.AmountMinor, ProductData: &stripego.CheckoutSessionLineItemPriceDataProductDataParams{Name: &name}}}}}
+	params := &stripego.CheckoutSessionParams{
+		Mode:              &mode,
+		SuccessURL:        &a.cfg.SuccessURL,
+		CancelURL:         &a.cfg.CancelURL,
+		ClientReferenceID: &p.ID,
+		Metadata:          map[string]string{"purchase_id": p.ID},
+		PaymentIntentData: &stripego.CheckoutSessionPaymentIntentDataParams{Metadata: map[string]string{"purchase_id": p.ID}},
+		LineItems: []*stripego.CheckoutSessionLineItemParams{{
+			Quantity: &quantity,
+			PriceData: &stripego.CheckoutSessionLineItemPriceDataParams{
+				Currency:    &p.Currency,
+				UnitAmount:  &p.AmountMinor,
+				ProductData: &stripego.CheckoutSessionLineItemPriceDataProductDataParams{Name: &name},
+			},
+		}},
+	}
 	params.SetIdempotencyKey("credits-checkout:" + p.ID)
 	client := session.Client{B: stripego.GetBackend(stripego.APIBackend), Key: a.cfg.SecretKey}
 	cs, err := client.New(params)
@@ -137,7 +155,7 @@ func mapSubscriptionEvent(evt stripego.Event) (payments.SubscriptionEvent, bool)
 	}
 }
 
-func (a *Adapter) handleInvoiceEvent(ctx context.Context, evt stripego.Event) (bool, error) { //nolint:gocognit,gocyclo,funlen
+func (a *Adapter) handleInvoiceEvent(ctx context.Context, evt stripego.Event) (bool, error) { //nolint:funlen
 	switch evt.Type {
 	case "invoice.paid", "invoice.payment_failed":
 	default:
@@ -226,7 +244,7 @@ func (a *Adapter) handleInvoiceEvent(ctx context.Context, evt stripego.Event) (b
 		isProration := false
 		if raw.Lines != nil {
 			for _, l := range raw.Lines.Data {
-				if l.Period.End-l.Period.Start < 86400 {
+				if l.Period.End-l.Period.Start < prorationGraceSeconds {
 					isProration = true
 					break
 				}

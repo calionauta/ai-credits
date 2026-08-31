@@ -1,4 +1,4 @@
-package credits //nolint:goconst
+package credits
 
 import (
 	"errors"

@@ -71,7 +71,7 @@ func New(db *sql.DB, ledger Ledger, catalog map[string]CatalogItem) (*Service, e
 		}
 	}
 	s := &Service{db: db, ledger: ledger, catalog: catalog, now: time.Now}
-	if _, err := db.Exec(schema); err != nil {
+	if _, err := db.ExecContext(context.Background(), schema); err != nil {
 		return nil, err
 	}
 	// Backfill new columns for existing DBs (idempotent ALTERs)
@@ -82,9 +82,9 @@ func New(db *sql.DB, ledger Ledger, catalog map[string]CatalogItem) (*Service, e
 		`ALTER TABLE payment_subscriptions ADD COLUMN cancel_at_period_end INTEGER DEFAULT 0`,
 		`ALTER TABLE payment_subscriptions ADD COLUMN canceled_at INTEGER DEFAULT 0`,
 	} {
-		_, _ = db.Exec(ddl)
+		_, _ = db.ExecContext(context.Background(), ddl)
 	}
-	_, _ = db.Exec(`INSERT INTO payments_schema_migrations(version,applied_at) VALUES(1,?) ON CONFLICT(version) DO NOTHING`, s.now().Unix())
+	_, _ = db.ExecContext(context.Background(), `INSERT INTO payments_schema_migrations(version,applied_at) VALUES(1,?) ON CONFLICT(version) DO NOTHING`, s.now().Unix())
 	return s, nil
 }
 
@@ -111,7 +111,9 @@ func (s *Service) CreatePurchase(ctx context.Context, provider, userID, sku stri
 
 func (s *Service) Purchase(ctx context.Context, id string) (*Purchase, error) {
 	var p Purchase
-	err := s.db.QueryRowContext(ctx, `SELECT id,user_id,sku,provider,credits,currency,amount_minor,COALESCE(payment_id,''),status,reversed_credits FROM payment_purchases WHERE id=?`, id).Scan(&p.ID, &p.UserID, &p.SKU, &p.Provider, &p.Credits, &p.Currency, &p.AmountMinor, &p.PaymentID, &p.Status, &p.ReversedCredits)
+	const queryPurchase = `SELECT id,user_id,sku,provider,credits,currency,amount_minor,` +
+		`COALESCE(payment_id,''),status,reversed_credits FROM payment_purchases WHERE id=?`
+	err := s.db.QueryRowContext(ctx, queryPurchase, id).Scan(&p.ID, &p.UserID, &p.SKU, &p.Provider, &p.Credits, &p.Currency, &p.AmountMinor, &p.PaymentID, &p.Status, &p.ReversedCredits)
 	return &p, err
 }
 
@@ -122,7 +124,9 @@ func (s *Service) Receive(ctx context.Context, e Event) error {
 	if e.Status != "paid" && e.Status != "refunded" && e.Status != "disputed" {
 		return fmt.Errorf("payments: unsupported status %q", e.Status)
 	}
-	res, err := s.db.ExecContext(ctx, `INSERT INTO payment_events(provider,event_id,purchase_id,payment_id,status,payload_hash,reversed_minor,received_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(provider,event_id) DO NOTHING`, e.Provider, e.EventID, e.PurchaseID, e.PaymentID, e.Status, e.PayloadHash, e.ReversedMinor, s.now().Unix())
+	const insertEvent = `INSERT INTO payment_events(provider,event_id,purchase_id,payment_id,status,` +
+		`payload_hash,reversed_minor,received_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(provider,event_id) DO NOTHING`
+	res, err := s.db.ExecContext(ctx, insertEvent, e.Provider, e.EventID, e.PurchaseID, e.PaymentID, e.Status, e.PayloadHash, e.ReversedMinor, s.now().Unix())
 	if err == nil {
 		if n, _ := res.RowsAffected(); n == 0 {
 			var hash string
@@ -172,9 +176,10 @@ func (s *Service) ProcessPending(ctx context.Context, limit int) error {
 	return nil
 }
 
-func (s *Service) processOne(ctx context.Context, e Event) error { //nolint:gocognit,gocyclo,funlen
+func (s *Service) processOne(ctx context.Context, e Event) error { //nolint:funlen
 	now := s.now().Unix()
-	res, err := s.db.ExecContext(ctx, `UPDATE payment_events SET process_status='processing',attempt_count=attempt_count+1,last_error=NULL,lease_until=? WHERE provider=? AND event_id=? AND process_status IN ('received','failed')`, now+30, e.Provider, e.EventID)
+	const grantLeaseSeconds = int64(30)
+	res, err := s.db.ExecContext(ctx, `UPDATE payment_events SET process_status='processing',attempt_count=attempt_count+1,last_error=NULL,lease_until=? WHERE provider=? AND event_id=? AND process_status IN ('received','failed')`, now+grantLeaseSeconds, e.Provider, e.EventID)
 	if err != nil {
 		return err
 	}
@@ -191,11 +196,11 @@ func (s *Service) processOne(ctx context.Context, e Event) error { //nolint:goco
 	// True atomic: ledger + purchase + event in one transaction when ledger is *credits.Service.
 	// Falls back to two-phase with idempotent retry when ledger is other implementation.
 	if cs, ok := s.ledger.(*credits.Service); ok {
-		tx, err2 := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable}) //nolint:govet
+		tx, err2 := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 		if err2 != nil {
 			return s.fail(ctx, e, err2)
 		}
-		defer func() { _ = tx.Rollback() }() //nolint:errcheck
+		defer func() { _ = tx.Rollback() }()
 		var ledgerErr error
 		if e.Status == "paid" {
 			ledgerErr = cs.GrantTx(ctx, tx, p.UserID, p.Credits, e.Provider, "purchase "+p.ID, "payment:"+e.Provider+":"+e.PaymentID)
@@ -214,9 +219,6 @@ func (s *Service) processOne(ctx context.Context, e Event) error { //nolint:goco
 				}
 			}
 			e.ReversedCredits = amount
-			if ledgerErr == nil && amount <= 0 {
-				// No ledger change needed, still need to mark purchase/event
-			}
 		}
 		if ledgerErr != nil {
 			_ = tx.Rollback()
@@ -228,9 +230,6 @@ func (s *Service) processOne(ctx context.Context, e Event) error { //nolint:goco
 			}
 		} else {
 			amount := e.ReversedCredits
-			if amount < 0 {
-				amount = 0
-			}
 			newReversed := p.ReversedCredits + max(amount, 0)
 			if _, err = tx.ExecContext(ctx, `UPDATE payment_purchases SET payment_id=?,status=?,reversed_credits=?,reversed_at=?,updated_at=? WHERE id=?`, e.PaymentID, e.Status, newReversed, now, now, p.ID); err != nil {
 				return s.fail(ctx, e, err)
@@ -271,16 +270,13 @@ func (s *Service) processOne(ctx context.Context, e Event) error { //nolint:goco
 	if err != nil {
 		return s.fail(ctx, e, err)
 	}
-	defer func() { _ = tx.Rollback() }() //nolint:errcheck
+	defer func() { _ = tx.Rollback() }()
 	if e.Status == "paid" {
 		if _, err = tx.ExecContext(ctx, `UPDATE payment_purchases SET payment_id=?,status='paid',fulfilled_at=?,updated_at=? WHERE id=?`, e.PaymentID, now, now, p.ID); err != nil {
 			return s.fail(ctx, e, err)
 		}
 	} else {
 		amount := e.ReversedCredits
-		if amount < 0 {
-			amount = 0
-		}
 		newReversed := p.ReversedCredits + max(amount, 0)
 		if _, err = tx.ExecContext(ctx, `UPDATE payment_purchases SET payment_id=?,status=?,reversed_credits=?,reversed_at=?,updated_at=? WHERE id=?`, e.PaymentID, e.Status, newReversed, now, now, p.ID); err != nil {
 			return s.fail(ctx, e, err)
@@ -321,7 +317,14 @@ func (s *Service) ApplySubscription(ctx context.Context, e SubscriptionEvent) er
 	if e.Status == "cancelled" {
 		canceledAt = now
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO payment_subscriptions(provider,subscription_id,user_id,plan,status,period_start,period_end,last_event_created,updated_at,trial_start,trial_end,cancel_at,cancel_at_period_end,canceled_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(provider,subscription_id) DO UPDATE SET user_id=excluded.user_id,plan=excluded.plan,status=excluded.status,period_start=excluded.period_start,period_end=excluded.period_end,last_event_created=excluded.last_event_created,updated_at=excluded.updated_at,trial_start=excluded.trial_start,trial_end=excluded.trial_end,cancel_at=excluded.cancel_at,cancel_at_period_end=excluded.cancel_at_period_end,canceled_at=excluded.canceled_at WHERE excluded.last_event_created > payment_subscriptions.last_event_created`, e.Provider, e.SubscriptionID, e.UserID, e.Plan, e.Status, e.PeriodStart, e.PeriodEnd, e.Created, now, e.TrialStart, e.TrialEnd, e.CancelAt, boolToInt(e.CancelAtPeriodEnd), canceledAt)
+	const upsertSubscription = `INSERT INTO payment_subscriptions(provider,subscription_id,user_id,plan,status,` +
+		`period_start,period_end,last_event_created,updated_at,trial_start,trial_end,cancel_at,cancel_at_period_end,canceled_at) ` +
+		`VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(provider,subscription_id) DO UPDATE SET user_id=excluded.user_id,` +
+		`plan=excluded.plan,status=excluded.status,period_start=excluded.period_start,period_end=excluded.period_end,` +
+		`last_event_created=excluded.last_event_created,updated_at=excluded.updated_at,trial_start=excluded.trial_start,` +
+		`trial_end=excluded.trial_end,cancel_at=excluded.cancel_at,cancel_at_period_end=excluded.cancel_at_period_end,` +
+		`canceled_at=excluded.canceled_at WHERE excluded.last_event_created > payment_subscriptions.last_event_created`
+	_, err := s.db.ExecContext(ctx, upsertSubscription, e.Provider, e.SubscriptionID, e.UserID, e.Plan, e.Status, e.PeriodStart, e.PeriodEnd, e.Created, now, e.TrialStart, e.TrialEnd, e.CancelAt, boolToInt(e.CancelAtPeriodEnd), canceledAt)
 	return err
 }
 
@@ -335,7 +338,10 @@ func boolToInt(b bool) int {
 func (s *Service) Subscription(ctx context.Context, provider, id string) (*Subscription, error) {
 	var sub Subscription
 	var cancelAtPeriodEnd int
-	err := s.db.QueryRowContext(ctx, `SELECT provider,subscription_id,user_id,plan,status,period_start,period_end,COALESCE(trial_start,0),COALESCE(trial_end,0),COALESCE(cancel_at,0),COALESCE(cancel_at_period_end,0),COALESCE(canceled_at,0) FROM payment_subscriptions WHERE provider=? AND subscription_id=?`, provider, id).Scan(&sub.Provider, &sub.ID, &sub.UserID, &sub.Plan, &sub.Status, &sub.PeriodStart, &sub.PeriodEnd, &sub.TrialStart, &sub.TrialEnd, &sub.CancelAt, &cancelAtPeriodEnd, &sub.CanceledAt)
+	const querySubscription = `SELECT provider,subscription_id,user_id,plan,status,period_start,period_end,` +
+		`COALESCE(trial_start,0),COALESCE(trial_end,0),COALESCE(cancel_at,0),COALESCE(cancel_at_period_end,0),` +
+		`COALESCE(canceled_at,0) FROM payment_subscriptions WHERE provider=? AND subscription_id=?`
+	err := s.db.QueryRowContext(ctx, querySubscription, provider, id).Scan(&sub.Provider, &sub.ID, &sub.UserID, &sub.Plan, &sub.Status, &sub.PeriodStart, &sub.PeriodEnd, &sub.TrialStart, &sub.TrialEnd, &sub.CancelAt, &cancelAtPeriodEnd, &sub.CanceledAt)
 	sub.CancelAtPeriodEnd = cancelAtPeriodEnd == 1
 	return &sub, err
 }
@@ -354,7 +360,11 @@ func (s *Service) GrantSubscriptionPeriod(ctx context.Context, provider, subscri
 type ReconcileIssue struct{ Kind, ID string }
 
 func (s *Service) Reconcile(ctx context.Context) ([]ReconcileIssue, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT 'event',provider||':'||event_id FROM payment_events WHERE process_status!='applied' UNION ALL SELECT 'purchase',id FROM payment_purchases WHERE status='pending' AND created_at<? UNION ALL SELECT 'payment-without-event',p.id FROM payment_purchases p WHERE p.status IN ('paid','refunded','disputed') AND NOT EXISTS (SELECT 1 FROM payment_events e WHERE e.purchase_id=p.id AND e.process_status='applied')`, s.now().Add(-time.Hour).Unix())
+	const reconcileQuery = `SELECT 'event',provider||':'||event_id FROM payment_events WHERE process_status!='applied' ` +
+		`UNION ALL SELECT 'purchase',id FROM payment_purchases WHERE status='pending' AND created_at<? ` +
+		`UNION ALL SELECT 'payment-without-event',p.id FROM payment_purchases p WHERE p.status IN ('paid','refunded','disputed') ` +
+		`AND NOT EXISTS (SELECT 1 FROM payment_events e WHERE e.purchase_id=p.id AND e.process_status='applied')`
+	rows, err := s.db.QueryContext(ctx, reconcileQuery, s.now().Add(-time.Hour).Unix())
 	if err != nil {
 		return nil, err
 	}

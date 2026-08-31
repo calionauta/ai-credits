@@ -58,7 +58,7 @@ func (r *ByokRelay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	target, err := url.Parse(base)
-	if err != nil || target.Scheme != "https" && !(target.Scheme == "http" && isLoopbackHost(target.Hostname())) || target.Host == "" {
+	if err != nil || target.Scheme != "https" && (target.Scheme != "http" || !isLoopbackHost(target.Hostname())) || target.Host == "" {
 		http.Error(w, "bad provider base", http.StatusInternalServerError)
 		return
 	}

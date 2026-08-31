@@ -1,4 +1,4 @@
-package credits //nolint:lll
+package credits
 
 import (
 	"context"
@@ -20,15 +20,15 @@ func TestManagedBillingLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err2 := s.Settle(ctx, r, 12); err2 != nil { //nolint:govet
+	if err2 := s.Settle(ctx, r, 12); err2 != nil {
 		t.Fatal(err)
 	}
 	u := Usage{RequestID: "managed:req-1", UserID: testUser, Provider: "goai", Model: "gpt-4o-mini", BillingMode: billingModeManaged, InputTokens: 100, OutputTokens: 50, CreditsCharged: 12}
-	if err := s.RecordUsageRetry(ctx, u); err != nil {
+	if err = s.RecordUsageRetry(ctx, u); err != nil {
 		t.Fatal(err)
 	}
-	if err3 := s.RecordUsageRetry(ctx, u); err3 != nil { //nolint:govet
-		t.Fatalf("usage retry must be idempotent: %v", err3)
+	if err = s.RecordUsageRetry(ctx, u); err != nil {
+		t.Fatalf("usage retry must be idempotent: %v", err)
 	}
 
 	balance, err := s.Balance(ctx, testUser)

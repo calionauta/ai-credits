@@ -1,4 +1,4 @@
-package credits //nolint:lll,goconst
+package credits
 
 import (
 	"context"

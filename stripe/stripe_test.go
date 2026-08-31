@@ -25,7 +25,7 @@ func TestSubscriptionWebhookMapsPeriodAndStatus(t *testing.T) {
 	payload := []byte(`{"id":"evt_sub","created":20,"api_version":"2024-09-30.acacia","type":"customer.subscription.updated","data":{"object":{"id":"sub_1","status":"active","current_period_start":100,"current_period_end":200,"metadata":{"user_id":"u","plan":"pro"}}}}`)
 	signed := webhook.GenerateTestSignedPayload(&webhook.UnsignedPayload{Payload: payload, Secret: "whsec_test", Timestamp: time.Now()})
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(signed.Payload))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/", bytes.NewReader(signed.Payload))
 	req.Header.Set("Stripe-Signature", signed.Header)
 	a.HandleWebhook(rr, req)
 	if rr.Code != 200 {
@@ -60,7 +60,7 @@ func TestWebhookFulfillmentIsIdempotent(t *testing.T) {
 	signed := webhook.GenerateTestSignedPayload(&webhook.UnsignedPayload{Payload: payload, Secret: "whsec_test", Timestamp: time.Now()})
 	for range 2 {
 		rr := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(signed.Payload))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/", bytes.NewReader(signed.Payload))
 		req.Header.Set("Stripe-Signature", signed.Header)
 		a.HandleWebhook(rr, req)
 		if rr.Code != 200 {
@@ -80,10 +80,13 @@ func TestInvoicePaidAutoGrant(t *testing.T) {
 	p, _ := payments.New(db, ledger, map[string]payments.CatalogItem{})
 	a, _ := New(p, Config{WebhookSecret: "whsec_test", SubscriptionCredits: map[string]int64{"pro": 100}})
 	// invoice.paid for pro plan, subscription_cycle, period 100-200
-	payload := []byte(`{"id":"evt_inv_paid","api_version":"2024-09-30.acacia","created":30,"type":"invoice.paid","data":{"object":{"id":"in_1","status":"paid","billing_reason":"subscription_cycle","subscription":"sub_1","period_start":100,"period_end":200,"lines":{"data":[{"period":{"start":100,"end":200}}]},"metadata":{"user_id":"u","plan":"pro"}}}}`)
+	payload := []byte(`{"id":"evt_inv_paid","api_version":"2024-09-30.acacia","created":30,"type":"invoice.paid",` +
+		`"data":{"object":{"id":"in_1","status":"paid","billing_reason":"subscription_cycle",` +
+		`"subscription":"sub_1","period_start":100,"period_end":200,"lines":{"data":[{"period":{"start":100,"end":200}}]},` +
+		`"metadata":{"user_id":"u","plan":"pro"}}}}`)
 	signed := webhook.GenerateTestSignedPayload(&webhook.UnsignedPayload{Payload: payload, Secret: "whsec_test", Timestamp: time.Now()})
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(signed.Payload))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/", bytes.NewReader(signed.Payload))
 	req.Header.Set("Stripe-Signature", signed.Header)
 	a.HandleWebhook(rr, req)
 	if rr.Code != 200 {
@@ -95,7 +98,7 @@ func TestInvoicePaidAutoGrant(t *testing.T) {
 	}
 	// idempotent retry
 	rr2 := httptest.NewRecorder()
-	req2 := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(signed.Payload))
+	req2 := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/", bytes.NewReader(signed.Payload))
 	req2.Header.Set("Stripe-Signature", signed.Header)
 	a.HandleWebhook(rr2, req2)
 	if rr2.Code != 200 {
@@ -114,10 +117,13 @@ func TestInvoiceProrationSkipped(t *testing.T) {
 	p, _ := payments.New(db, ledger, map[string]payments.CatalogItem{})
 	a, _ := New(p, Config{WebhookSecret: "whsec_test", SubscriptionCredits: map[string]int64{"pro": 100}})
 	// subscription_update with short period (<86400) is proration, should be skipped
-	payload := []byte(`{"id":"evt_proration","api_version":"2024-09-30.acacia","created":31,"type":"invoice.paid","data":{"object":{"id":"in_pror","status":"paid","billing_reason":"subscription_update","subscription":"sub_1","period_start":100,"lines":{"data":[{"period":{"start":100,"end":200}}]},"metadata":{"user_id":"u","plan":"pro"}}}}`)
+	payload := []byte(`{"id":"evt_proration","api_version":"2024-09-30.acacia","created":31,"type":"invoice.paid",` +
+		`"data":{"object":{"id":"in_pror","status":"paid","billing_reason":"subscription_update",` +
+		`"subscription":"sub_1","period_start":100,"lines":{"data":[{"period":{"start":100,"end":200}}]},` +
+		`"metadata":{"user_id":"u","plan":"pro"}}}}`)
 	signed := webhook.GenerateTestSignedPayload(&webhook.UnsignedPayload{Payload: payload, Secret: "whsec_test", Timestamp: time.Now()})
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(signed.Payload))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/", bytes.NewReader(signed.Payload))
 	req.Header.Set("Stripe-Signature", signed.Header)
 	a.HandleWebhook(rr, req)
 	if rr.Code != 200 {
@@ -140,7 +146,7 @@ func TestInvoicePaymentFailedMarksPastDue(t *testing.T) {
 	payload := []byte(`{"id":"evt_failed","api_version":"2024-09-30.acacia","created":32,"type":"invoice.payment_failed","data":{"object":{"id":"in_fail","status":"open","billing_reason":"subscription_cycle","subscription":"sub_1","period_start":100,"metadata":{"user_id":"u","plan":"pro"}}}}`)
 	signed := webhook.GenerateTestSignedPayload(&webhook.UnsignedPayload{Payload: payload, Secret: "whsec_test", Timestamp: time.Now()})
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(signed.Payload))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/", bytes.NewReader(signed.Payload))
 	req.Header.Set("Stripe-Signature", signed.Header)
 	a.HandleWebhook(rr, req)
 	if rr.Code != 200 {
@@ -158,10 +164,13 @@ func TestSubscriptionTrialAndCancelFields(t *testing.T) {
 	ledger, _ := credits.New(db, credits.Config{})
 	p, _ := payments.New(db, ledger, map[string]payments.CatalogItem{})
 	a, _ := New(p, Config{WebhookSecret: "whsec_test"})
-	payload := []byte(`{"id":"evt_trial","api_version":"2024-09-30.acacia","created":40,"type":"customer.subscription.updated","data":{"object":{"id":"sub_trial","status":"trialing","current_period_start":100,"current_period_end":200,"trial_start":90,"trial_end":110,"cancel_at_period_end":true,"cancel_at":500,"metadata":{"user_id":"u","plan":"pro"}}}}`)
+	payload := []byte(`{"id":"evt_trial","api_version":"2024-09-30.acacia","created":40,"type":"customer.subscription.updated",` +
+		`"data":{"object":{"id":"sub_trial","status":"trialing","current_period_start":100,"current_period_end":200,` +
+		`"trial_start":90,"trial_end":110,"cancel_at_period_end":true,"cancel_at":500,` +
+		`"metadata":{"user_id":"u","plan":"pro"}}}}`)
 	signed := webhook.GenerateTestSignedPayload(&webhook.UnsignedPayload{Payload: payload, Secret: "whsec_test", Timestamp: time.Now()})
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(signed.Payload))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/", bytes.NewReader(signed.Payload))
 	req.Header.Set("Stripe-Signature", signed.Header)
 	a.HandleWebhook(rr, req)
 	if rr.Code != 200 {

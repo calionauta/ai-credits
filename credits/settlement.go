@@ -2,7 +2,6 @@ package credits
 
 import (
 	"context"
-	"database/sql"
 	"time"
 )
 
@@ -29,9 +28,9 @@ func (s *Service) SettleViaOutbox(ctx context.Context, requestID string, usage U
 		_, _ = s.db.ExecContext(ctx, `UPDATE settlement_outbox SET status='failed',last_error=?,updated_at=? WHERE request_id=?`, err.Error(), s.cfg.Now().Unix(), requestID)
 		return err
 	}
-	if err2 := s.Settle(ctx, resv, creditsCharged); err2 != nil { //nolint:govet
-		_, _ = s.db.ExecContext(ctx, `UPDATE settlement_outbox SET status='failed',last_error=?,attempt_count=attempt_count+1,updated_at=? WHERE request_id=?`, err.Error(), s.cfg.Now().Unix(), requestID)
-		return err
+	if err2 := s.Settle(ctx, resv, creditsCharged); err2 != nil {
+		_, _ = s.db.ExecContext(ctx, `UPDATE settlement_outbox SET status='failed',last_error=?,attempt_count=attempt_count+1,updated_at=? WHERE request_id=?`, err2.Error(), s.cfg.Now().Unix(), requestID)
+		return err2
 	}
 	usage.CostMicrounits, _ = s.Cost(ctx, usage)
 	usage.CreditsCharged = creditsCharged
@@ -67,6 +66,7 @@ func (s *Service) ProcessSettlementOutbox(ctx context.Context, limit int) error 
 		ids = append(ids, id)
 	}
 	rows.Close()
+	const staleSettlementSeconds = int64(3600)
 	for _, id := range ids {
 		// Attempt to settle via stored usage if available; otherwise expire stale pending
 		var resID string
@@ -75,23 +75,14 @@ func (s *Service) ProcessSettlementOutbox(ctx context.Context, limit int) error 
 		if err := s.db.QueryRowContext(ctx, `SELECT reservation_id,created_at,provider,model FROM settlement_outbox WHERE request_id=?`, id).Scan(&resID, &created, &provider, &model); err != nil {
 			continue
 		}
-		if time.Now().Unix()-created > 3600 {
+		if time.Now().Unix()-created > staleSettlementSeconds {
 			if resv, err := s.reservationByID(ctx, resID); err == nil && resv.Status == "reserved" {
 				_ = s.Release(ctx, resv)
 				_, _ = s.db.ExecContext(ctx, `UPDATE settlement_outbox SET status='expired',updated_at=? WHERE request_id=?`, s.cfg.Now().Unix(), id)
 			}
-		} else {
-			// Retry pending with generic usage lookup would go here; for now keep pending for explicit SettleViaOutbox call
 		}
 		_ = provider
 		_ = model
 	}
 	return nil
 }
-
-func (s *Service) ensureSettlementSchema(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS settlement_outbox (request_id TEXT PRIMARY KEY,user_id TEXT NOT NULL,reservation_id TEXT NOT NULL,provider TEXT NOT NULL,model TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',attempt_count INTEGER NOT NULL DEFAULT 0,last_error TEXT,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL)`)
-	return err
-}
-
-var _ = sql.ErrNoRows
