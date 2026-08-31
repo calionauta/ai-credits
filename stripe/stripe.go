@@ -98,7 +98,7 @@ func (a *Adapter) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	if handled, herr := a.handleInvoiceEvent(r.Context(), evt); handled {
+	if handled, herr := handleInvoiceEvent(r.Context(), a, evt); handled {
 		if herr != nil {
 			slog.Warn("stripe: invoice handling", "type", evt.Type, "err", herr)
 			http.Error(w, "processing failed", http.StatusInternalServerError)
@@ -155,123 +155,70 @@ func mapSubscriptionEvent(evt stripego.Event) (payments.SubscriptionEvent, bool)
 	}
 }
 
-func (a *Adapter) handleInvoiceEvent(ctx context.Context, evt stripego.Event) (bool, error) { //nolint:funlen
+type invoiceShadow struct {
+	Parent struct {
+		SubscriptionDetails *struct {
+			Subscription string            `json:"subscription"`
+			Metadata     map[string]string `json:"metadata"`
+		} `json:"subscription_details"`
+	} `json:"parent"`
+	Lines *struct {
+		Data []struct {
+			Parent *struct {
+				SubscriptionItemDetails *struct {
+					Subscription string `json:"subscription"`
+				} `json:"subscription_item_details"`
+			} `json:"parent"`
+		} `json:"data"`
+	} `json:"lines"`
+}
+
+// subID resolves the subscription the invoice belongs to. Stripe sends it as a
+// v1 string ID (`invoice.subscription`) or as an expanded v2 object via
+// invoice.subscription_details and line `parent.subscription_item_details`;
+// stripego.Invoice only surfaces the v1 string, so the v2 shadow paths stay raw.
+func invoiceSubID(sub stripego.Invoice, s invoiceShadow) string {
+	if sub.Subscription != nil && sub.Subscription.ID != "" {
+		return sub.Subscription.ID
+	}
+	if s.Parent.SubscriptionDetails != nil && s.Parent.SubscriptionDetails.Subscription != "" {
+		return s.Parent.SubscriptionDetails.Subscription
+	}
+	if s.Lines != nil {
+		for _, l := range s.Lines.Data {
+			if l.Parent != nil && l.Parent.SubscriptionItemDetails != nil && l.Parent.SubscriptionItemDetails.Subscription != "" {
+				return l.Parent.SubscriptionItemDetails.Subscription
+			}
+		}
+	}
+	return ""
+}
+
+func handleInvoiceEvent(ctx context.Context, a *Adapter, evt stripego.Event) (bool, error) {
 	switch evt.Type {
 	case "invoice.paid", "invoice.payment_failed":
 	default:
 		return false, nil
 	}
-	var raw struct {
-		ID            string            `json:"id"`
-		Status        string            `json:"status"`
-		BillingReason string            `json:"billing_reason"`
-		Subscription  json.RawMessage   `json:"subscription"`
-		Customer      json.RawMessage   `json:"customer"`
-		AmountPaid    int64             `json:"amount_paid"`
-		Currency      string            `json:"currency"`
-		PeriodStart   int64             `json:"period_start"`
-		PeriodEnd     int64             `json:"period_end"`
-		Metadata      map[string]string `json:"metadata"`
-		Parent        struct {
-			SubscriptionDetails *struct {
-				Subscription string            `json:"subscription"`
-				Metadata     map[string]string `json:"metadata"`
-			} `json:"subscription_details"`
-		} `json:"parent"`
-		Lines *struct {
-			Data []struct {
-				Period struct {
-					Start int64 `json:"start"`
-					End   int64 `json:"end"`
-				} `json:"period"`
-				Parent *struct {
-					SubscriptionItemDetails *struct {
-						Subscription string `json:"subscription"`
-					} `json:"subscription_item_details"`
-				} `json:"parent"`
-			} `json:"data"`
-		} `json:"lines"`
-	}
-	if err := json.Unmarshal(evt.Data.Raw, &raw); err != nil {
+	var raw invoiceShadow
+	var inv stripego.Invoice
+	if err := json.Unmarshal(evt.Data.Raw, &inv); err != nil {
 		return true, err
 	}
-	subID := extractStringID(raw.Subscription)
-	if subID == "" && raw.Parent.SubscriptionDetails != nil {
-		subID = raw.Parent.SubscriptionDetails.Subscription
-	}
-	if subID == "" && raw.Lines != nil {
-		for _, l := range raw.Lines.Data {
-			if l.Parent != nil && l.Parent.SubscriptionItemDetails != nil && l.Parent.SubscriptionItemDetails.Subscription != "" {
-				subID = l.Parent.SubscriptionItemDetails.Subscription
-				break
-			}
-		}
-	}
+	_ = json.Unmarshal(evt.Data.Raw, &raw)
+	subID := invoiceSubID(inv, raw)
 	if evt.Type == "invoice.payment_failed" {
-		if subID != "" {
-			userID := ""
-			plan := ""
-			if raw.Metadata != nil {
-				userID = raw.Metadata["user_id"]
-				plan = raw.Metadata["plan"]
-			}
-			if (userID == "" || plan == "") && a.payments != nil {
-				if sub, err := a.payments.Subscription(ctx, "stripe", subID); err == nil && sub != nil {
-					if userID == "" {
-						userID = sub.UserID
-					}
-					if plan == "" {
-						plan = sub.Plan
-					}
-				}
-			}
-			if userID != "" && plan != "" {
-				_ = a.payments.ApplySubscription(ctx, payments.SubscriptionEvent{
-					Provider: "stripe", EventID: evt.ID, SubscriptionID: subID, UserID: userID, Plan: plan,
-					Status: "past_due", PeriodStart: raw.PeriodStart, PeriodEnd: raw.PeriodEnd, Created: evt.Created,
-				})
-			}
-		}
-		return true, nil
+		return handleInvoiceFailed(ctx, a, evt, inv, subID)
 	}
-	if raw.Status != "" && raw.Status != "paid" {
-		return true, nil
-	}
-	if raw.BillingReason == "manual" {
-		return true, nil
-	}
-	if raw.BillingReason == "subscription_update" {
-		isProration := false
-		if raw.Lines != nil {
-			for _, l := range raw.Lines.Data {
-				if l.Period.End-l.Period.Start < prorationGraceSeconds {
-					isProration = true
-					break
-				}
-			}
-		}
-		if isProration {
-			slog.Info("stripe: proration invoice skipped full grant", "invoice", raw.ID, "subscription", subID)
-			return true, nil
-		}
-	}
-	if subID == "" {
-		slog.Warn("stripe: invoice.paid without subscription", "invoice", raw.ID)
-		return true, nil
-	}
-	periodStart := raw.PeriodStart
-	if periodStart == 0 && raw.Lines != nil && len(raw.Lines.Data) > 0 {
-		periodStart = raw.Lines.Data[0].Period.Start
-	}
-	if periodStart == 0 {
-		slog.Warn("stripe: invoice.paid missing period_start", "invoice", raw.ID, "subscription", subID)
-		return true, nil
-	}
+	return handleInvoicePaid(ctx, a, evt, inv, raw, subID)
+}
+
+func resolveUserPlan(ctx context.Context, a *Adapter, inv stripego.Invoice, raw invoiceShadow, subID string) (string, string) {
 	userID := ""
 	plan := ""
-	if raw.Metadata != nil {
-		userID = raw.Metadata["user_id"]
-		plan = raw.Metadata["plan"]
+	if inv.Metadata != nil {
+		userID = inv.Metadata["user_id"]
+		plan = inv.Metadata["plan"]
 	}
 	if (userID == "" || plan == "") && raw.Parent.SubscriptionDetails != nil && raw.Parent.SubscriptionDetails.Metadata != nil {
 		if userID == "" {
@@ -291,8 +238,60 @@ func (a *Adapter) handleInvoiceEvent(ctx context.Context, evt stripego.Event) (b
 			}
 		}
 	}
+	return userID, plan
+}
+
+func handleInvoiceFailed(ctx context.Context, a *Adapter, evt stripego.Event, inv stripego.Invoice, subID string) (bool, error) {
+	if subID == "" {
+		return true, nil
+	}
+	userID, plan := resolveUserPlan(ctx, a, inv, invoiceShadow{}, subID)
+	if userID != "" && plan != "" {
+		_ = a.payments.ApplySubscription(ctx, payments.SubscriptionEvent{
+			Provider: "stripe", EventID: evt.ID, SubscriptionID: subID, UserID: userID, Plan: plan,
+			Status: "past_due", PeriodStart: inv.PeriodStart, PeriodEnd: inv.PeriodEnd, Created: evt.Created,
+		})
+	}
+	return true, nil
+}
+
+func handleInvoicePaid(ctx context.Context, a *Adapter, _ stripego.Event, inv stripego.Invoice, raw invoiceShadow, subID string) (bool, error) {
+	if string(inv.Status) != "" && string(inv.Status) != "paid" {
+		return true, nil
+	}
+	if string(inv.BillingReason) == "manual" {
+		return true, nil
+	}
+	if string(inv.BillingReason) == "subscription_update" {
+		isProration := false
+		if inv.Lines != nil {
+			for _, l := range inv.Lines.Data {
+				if l.Period != nil && l.Period.End-l.Period.Start < prorationGraceSeconds {
+					isProration = true
+					break
+				}
+			}
+		}
+		if isProration {
+			slog.Info("stripe: proration invoice skipped full grant", "invoice", inv.ID, "subscription", subID)
+			return true, nil
+		}
+	}
+	if subID == "" {
+		slog.Warn("stripe: invoice.paid without subscription", "invoice", inv.ID)
+		return true, nil
+	}
+	periodStart := inv.PeriodStart
+	if periodStart == 0 && inv.Lines != nil && len(inv.Lines.Data) > 0 && inv.Lines.Data[0].Period != nil {
+		periodStart = inv.Lines.Data[0].Period.Start
+	}
+	if periodStart == 0 {
+		slog.Warn("stripe: invoice.paid missing period_start", "invoice", inv.ID, "subscription", subID)
+		return true, nil
+	}
+	userID, plan := resolveUserPlan(ctx, a, inv, raw, subID)
 	if userID == "" || plan == "" {
-		slog.Warn("stripe: invoice.paid missing user/plan", "invoice", raw.ID, "subscription", subID)
+		slog.Warn("stripe: invoice.paid missing user/plan", "invoice", inv.ID, "subscription", subID)
 		return true, nil
 	}
 	var credits int64
@@ -302,30 +301,13 @@ func (a *Adapter) handleInvoiceEvent(ctx context.Context, evt stripego.Event) (b
 		}
 	}
 	if credits == 0 {
-		slog.Info("stripe: invoice.paid no credits mapping for plan", "plan", plan, "invoice", raw.ID)
+		slog.Info("stripe: invoice.paid no credits mapping for plan", "plan", plan, "invoice", inv.ID)
 		return true, nil
 	}
-	if err := a.payments.GrantSubscriptionPeriod(ctx, "stripe", subID, raw.ID, userID, credits, periodStart); err != nil {
+	if err := a.payments.GrantSubscriptionPeriod(ctx, "stripe", subID, inv.ID, userID, credits, periodStart); err != nil {
 		return true, err
 	}
 	return true, nil
-}
-
-func extractStringID(raw json.RawMessage) string {
-	if len(raw) == 0 {
-		return ""
-	}
-	var s string
-	if json.Unmarshal(raw, &s) == nil {
-		return s
-	}
-	var obj struct {
-		ID string `json:"id"`
-	}
-	if json.Unmarshal(raw, &obj) == nil {
-		return obj.ID
-	}
-	return ""
 }
 
 func mapEvent(evt stripego.Event, hash string) (payments.Event, bool) {
