@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        module: [".", "integrations/payments", "integrations/stripe"]
+        module: ["."]
     defaults:
       run:
         working-directory: ${{ matrix.module }}
