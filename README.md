@@ -183,24 +183,7 @@ golangci-lint run ./...      # lint gate
 govulncheck ./...            # vuln scan
 ```
 
-Synthetic Stripe webhooks (`webhook.GenerateTestSignedPayload`) cover `checkout.session.completed`, `charge.refunded`, `charge.dispute.created`, and `customer.subscription.*`/`invoice.*` without network.
-
-### E2E with real Stripe (optional, for contributors)
-
-Integration tests that hit the Stripe test-mode API are **opt-in** and require test keys. They are not needed for normal library use.
-
-1. Create a Stripe test account and get `STRIPE_SECRET_KEY` (`sk_test_...`) and `STRIPE_WEBHOOK_SECRET` (`whsec_...`).
-2. Install `stripe-cli` and login: `stripe login`.
-3. Run E2E tests:
-
-```bash
-export STRIPE_SECRET_KEY=sk_test_...
-export STRIPE_WEBHOOK_SECRET=whsec_...
-go test -tags=e2e -run TestStripeE2E -count=1 ./stripe -v
-# or trigger a real invoice event:
-stripe trigger invoice.paid --add invoice:metadata[user_id]=u_test --add invoice:metadata[plan]=pro
-```
-
-Without `STRIPE_SECRET_KEY`, `go test ./...` skips the `e2e` tag and still passes. See `stripe/stripe_test.go` for synthetic tests and `e2e/` for real-API tests.
+Synthetic Stripe webhooks and the opt-in E2E suite against real Stripe
+(test-mode, requires keys) are documented in [`docs/testing.md`](docs/testing.md).
 
 - [MIT](./LICENSE)
