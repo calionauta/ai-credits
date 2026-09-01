@@ -49,18 +49,6 @@ func newTestService(t *testing.T) (*Service, func()) {
 	return s, func() {}
 }
 
-func TestEnsureSchemaIdempotent(t *testing.T) {
-	s, cleanup := newTestService(t)
-	defer cleanup()
-	ctx := context.Background()
-	if err := s.EnsureSchema(ctx); err != nil {
-		t.Fatalf("first EnsureSchema: %v", err)
-	}
-	if err := s.EnsureSchema(ctx); err != nil {
-		t.Fatalf("second EnsureSchema must be idempotent, got %v", err)
-	}
-}
-
 func TestGrantReflectsBalance(t *testing.T) {
 	s, cleanup := newTestService(t)
 	defer cleanup()

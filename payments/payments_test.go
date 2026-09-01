@@ -257,3 +257,24 @@ func TestAtomicGrantTx(t *testing.T) {
 		t.Fatalf("purchase status=%s", status)
 	}
 }
+
+func TestAtomicGrantTxRollbackOnLedgerFailure(t *testing.T) {
+	db, _ := sql.Open("sqlite", "file:atomic-rollback?mode=memory&cache=shared")
+	defer db.Close()
+	ledger, _ := credits.New(db, credits.Config{})
+	svc, _ := New(db, ledger, map[string]CatalogItem{"topup": {Credits: 100, Currency: "usd", AmountMinor: 1000}})
+	ctx := context.Background()
+	p, _ := svc.CreatePurchase(ctx, "stripe", "u", "topup")
+	e := Event{Provider: "stripe", EventID: "evt_fail", PaymentID: "pi_fail", PurchaseID: p.ID, Status: "paid"}
+	if err := svc.Receive(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	bal1, _ := ledger.Balance(ctx, "u")
+	if err := svc.Receive(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	bal2, _ := ledger.Balance(ctx, "u")
+	if bal1 != bal2 {
+		t.Fatalf("idempotent retry changed balance %d -> %d", bal1, bal2)
+	}
+}

@@ -163,3 +163,33 @@ func TestRecordUsage(t *testing.T) {
 		t.Fatalf("row = %q/%q, want managed/builtin-2026-08", mode, ver)
 	}
 }
+
+func FuzzCost(f *testing.F) {
+	f.Add(int64(100), int64(50), int64(0), int64(0))
+	f.Add(int64(10000), int64(4000), int64(500), int64(100))
+	f.Fuzz(func(t *testing.T, in, out, cached, reasoning int64) {
+		if in < 0 || out < 0 || cached < 0 || reasoning < 0 {
+			t.Skip()
+		}
+		if in > 1_000_000 || out > 1_000_000 {
+			t.Skip()
+		}
+		s, cleanup := newTestService(t)
+		defer cleanup()
+		ctx := context.Background()
+		_, err := s.Cost(ctx, Usage{Model: "gpt-4o-mini", InputTokens: int(in), OutputTokens: int(out), CachedTokens: int(cached), ReasoningTokens: int(reasoning)})
+		if err != nil && !errors.Is(err, ErrUnknownModel) {
+			t.Fatalf("Cost unexpected err: %v", err)
+		}
+		if err == nil {
+			mu, _ := s.Cost(ctx, Usage{Model: "gpt-4o-mini", InputTokens: int(in), OutputTokens: int(out), CachedTokens: int(cached), ReasoningTokens: int(reasoning)})
+			cr, _ := s.Credits(ctx, Usage{Model: "gpt-4o-mini", InputTokens: int(in), OutputTokens: int(out), CachedTokens: int(cached), ReasoningTokens: int(reasoning)})
+			if mu < 0 || cr < 0 {
+				t.Fatalf("negative cost %d credits %d", mu, cr)
+			}
+			if cr != (mu+999)/1000 {
+				t.Fatalf("credits not ceil: mu %d cr %d", mu, cr)
+			}
+		}
+	})
+}

@@ -72,3 +72,32 @@ func TestByokVersionGrace(t *testing.T) {
 		t.Fatalf("cred=%s", cred)
 	}
 }
+
+func TestByokConcurrentGrace(t *testing.T) {
+	s, cleanup := newTestService(t)
+	defer cleanup()
+	ctx := context.Background()
+	k1 := [32]byte{}
+	for i := range k1 {
+		k1[i] = byte(i)
+	}
+	store := s.NewCredentialStore(k1)
+	if err := store.Put(ctx, testUser, "openai", "sk-concurrent-1"); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 2)
+	go func() { done <- store.Put(ctx, testUser, "openai", "sk-concurrent-2") }()
+	go func() {
+		_, err := store.Get(ctx, testUser, "openai")
+		done <- err
+	}()
+	for i := 0; i < 2; i++ {
+		if err := <-done; err != nil {
+			t.Fatalf("concurrent grace err: %v", err)
+		}
+	}
+	cred, _ := store.Get(ctx, testUser, "openai")
+	if cred != "sk-concurrent-2" {
+		t.Fatalf("expected sk-concurrent-2, got %s", cred)
+	}
+}
