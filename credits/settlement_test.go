@@ -91,13 +91,14 @@ func TestByokConcurrentGrace(t *testing.T) {
 		_, err := store.Get(ctx, testUser, "openai")
 		done <- err
 	}()
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		if err := <-done; err != nil {
 			t.Fatalf("concurrent grace err: %v", err)
 		}
 	}
 	cred, _ := store.Get(ctx, testUser, "openai")
-	if cred != "sk-concurrent-2" {
+	const wantCred = "sk-concurrent-2" //nolint:gosec // test literal
+	if cred != wantCred {
 		t.Fatalf("expected sk-concurrent-2, got %s", cred)
 	}
 }
