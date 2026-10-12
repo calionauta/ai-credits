@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
+	_ "turso.tech/database/tursogo"
 )
 
 const testUser = "user_test"
@@ -20,15 +20,23 @@ func testDB(t *testing.T) *sql.DB {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "credits.db")
-	// modernc.org/sqlite DSN: _busy_timeout + _txlock=immediate are dedicated
-	// keys the driver turns into `pragma busy_timeout` + `begin immediate`.
-	// IMMEDIATE acquires the SQLite write lock up front (deferred txs upgrade
-	// mid-tx and deadlock with BUSY under concurrency). WAL lets concurrent
-	// readers proceed during a write.
-	dsn := "file:" + path + "?_busy_timeout=30000&_txlock=immediate&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)"
-	db, err := sql.Open("sqlite", dsn)
+	// tursogo DSN: only `_busy_timeout` survives as a DSN option (the
+	// modernc `_txlock`/`_pragma` keys poison path resolution). WAL +
+	// foreign keys apply as post-open PRAGMAs below; busy_timeout keeps
+	// concurrent writers retrying inside the engine instead of
+	// surfacing BUSY to the ledger.
+	dsn := path + "?_busy_timeout=30000"
+	db, err := sql.Open("turso", dsn)
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
+	}
+	for _, pragma := range []string{
+		"PRAGMA journal_mode = WAL",
+		"PRAGMA foreign_keys = ON",
+	} {
+		if _, err := db.Exec(pragma); err != nil {
+			t.Fatalf("pragma %s: %v", pragma, err)
+		}
 	}
 	db.SetMaxOpenConns(8)
 	t.Cleanup(func() { db.Close() })

@@ -2,21 +2,16 @@ package payments
 
 import (
 	"context"
-	"database/sql"
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
+	_ "turso.tech/database/tursogo"
 
 	"github.com/calionauta/ai-credits/credits"
 )
 
 func TestWorkerRecoversExpiredProcessingLease(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:restart?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+	db := testFileDB(t, "restart")
 	ledger, err := credits.New(db, credits.Config{})
 	if err != nil {
 		t.Fatal(err)
@@ -51,8 +46,7 @@ func TestWorkerRecoversExpiredProcessingLease(t *testing.T) {
 }
 
 func TestPartialRefundsAreCumulativeAndIdempotent(t *testing.T) {
-	db, _ := sql.Open("sqlite", "file:partial?mode=memory&cache=shared")
-	defer db.Close()
+	db := testFileDB(t, "partial")
 	ledger, err := credits.New(db, credits.Config{})
 	if err != nil {
 		t.Fatal(err)
@@ -87,8 +81,7 @@ func TestPartialRefundsAreCumulativeAndIdempotent(t *testing.T) {
 }
 
 func TestEventIDPayloadCollisionRejected(t *testing.T) {
-	db, _ := sql.Open("sqlite", "file:collision?mode=memory&cache=shared")
-	defer db.Close()
+	db := testFileDB(t, "collision")
 	ledger, _ := credits.New(db, credits.Config{})
 	svc, _ := New(db, ledger, map[string]CatalogItem{"x": {Credits: 10, Currency: "usd", AmountMinor: 100}})
 	p, _ := svc.CreatePurchase(context.Background(), "stripe", "u", "x")
@@ -103,8 +96,7 @@ func TestEventIDPayloadCollisionRejected(t *testing.T) {
 }
 
 func TestSubscriptionEventsIgnoreOutOfOrderUpdates(t *testing.T) {
-	db, _ := sql.Open("sqlite", "file:subs?mode=memory&cache=shared")
-	defer db.Close()
+	db := testFileDB(t, "subs")
 	ledger, _ := credits.New(db, credits.Config{})
 	svc, _ := New(db, ledger, map[string]CatalogItem{})
 	ctx := context.Background()
@@ -140,8 +132,7 @@ func TestSubscriptionEventsIgnoreOutOfOrderUpdates(t *testing.T) {
 }
 
 func TestReconcileClassifiesPendingState(t *testing.T) {
-	db, _ := sql.Open("sqlite", "file:reconcile?mode=memory&cache=shared")
-	defer db.Close()
+	db := testFileDB(t, "reconcile")
 	ledger, _ := credits.New(db, credits.Config{})
 	svc, _ := New(db, ledger, map[string]CatalogItem{"x": {Credits: 10, Currency: "usd", AmountMinor: 100}})
 	svc.now = func() time.Time { return time.Unix(7200, 0) }
@@ -157,11 +148,7 @@ func TestReconcileClassifiesPendingState(t *testing.T) {
 }
 
 func TestPurchaseLifecycle(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:test?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+	db := testFileDB(t, "test")
 	l, err := credits.New(db, credits.Config{})
 	if err != nil {
 		t.Fatal(err)
@@ -196,8 +183,7 @@ func TestPurchaseLifecycle(t *testing.T) {
 }
 
 func TestWorkerDeadLetter(t *testing.T) {
-	db, _ := sql.Open("sqlite", "file:deadletter?mode=memory&cache=shared")
-	defer db.Close()
+	db := testFileDB(t, "deadletter")
 	ledger, _ := credits.New(db, credits.Config{})
 	svc, _ := New(db, ledger, map[string]CatalogItem{"x": {Credits: 10, Currency: "usd", AmountMinor: 100}})
 	ctx := context.Background()
@@ -213,8 +199,7 @@ func TestWorkerDeadLetter(t *testing.T) {
 }
 
 func TestSubscriptionNewColumns(t *testing.T) {
-	db, _ := sql.Open("sqlite", "file:subs-newcols?mode=memory&cache=shared")
-	defer db.Close()
+	db := testFileDB(t, "subs-newcols")
 	ledger, _ := credits.New(db, credits.Config{})
 	svc, _ := New(db, ledger, map[string]CatalogItem{})
 	ctx := context.Background()
@@ -236,8 +221,7 @@ func TestSubscriptionNewColumns(t *testing.T) {
 }
 
 func TestAtomicGrantTx(t *testing.T) {
-	db, _ := sql.Open("sqlite", "file:atomic?mode=memory&cache=shared")
-	defer db.Close()
+	db := testFileDB(t, "atomic")
 	ledger, _ := credits.New(db, credits.Config{})
 	svc, _ := New(db, ledger, map[string]CatalogItem{"topup": {Credits: 50, Currency: "usd", AmountMinor: 500}})
 	ctx := context.Background()

@@ -28,20 +28,26 @@ govulncheck ./...       # vulnerability scan
 
 ## SQLite pragmas (required for concurrency)
 
-Reserve/settle use `BEGIN IMMEDIATE` semantics (write lock up front). With
-`modernc.org/sqlite` the driver maps `_txlock=immediate` and `_busy_timeout`
-from the DSN — without them concurrent writers deadlock with SQLITE_BUSY. Set
-WAL too. Example:
+Reserve/settle use `BEGIN IMMEDIATE` semantics (write lock up front).
+Drivers disagree on what begins immediately, so the guarantee lives in
+`immediateTx` (a zero-row `UPDATE` forces the write-lock upgrade up
+front), not in DSN dialect. tursogo takes only `_busy_timeout` as a DSN
+option — never pass the modernc/ncruces `_txlock`/`_pragma` keys (they
+poison path resolution); the rest applies as post-open PRAGMAs (see
+`openTursoLedger`). `OpenSQLite("turso", path)` does all of this.
+Tests open isolated file-backed DBs via `testFileDB` (never
+`file:NAME?mode=memory&cache=shared` — tursogo treats that as a literal
+filename). Example:
 
 ```go
-db, _ := sql.Open("sqlite", "file:app.db?_txlock=immediate&_busy_timeout=30000&_pragma=journal_mode(WAL)")
+db, _ := credits.OpenSQLite("turso", "app.db")
 db.SetMaxOpenConns(8)
 ```
 
 ## Usage (short)
 
 ```go
-db, _ := sql.Open("sqlite", "app.db")
+db, _ := credits.OpenSQLite("turso", "app.db")
 svc, _ := credits.New(db, credits.Config{MonthlyCredits: 1000})
 svc.Grant(ctx, userID, 1000, "signup", "welcome", "signup:"+userID)
 // unknown-output call:

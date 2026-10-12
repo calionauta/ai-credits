@@ -5,6 +5,23 @@ Todas as mudanças notáveis em `ai-credits` são documentadas neste arquivo.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e o projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [Unreleased]
+
+### Changed
+- **Driver: tursogo, não modernc.** `modernc.org/sqlite` sai do `go.mod`; o
+  lib depende de `turso.tech/database/tursogo`. `OpenSQLite` aceita
+  `"turso"` como driverName (pragmas via post-open, pois o tursogo só
+  entende `_busy_timeout` no DSN); `"sqlite3"` (ncruces) continua igual.
+  Testes usam `testFileDB` (arquivo isolado por teste) em vez do
+  `file:…?mode=memory&cache=shared` que o tursogo lia como nome literal
+  de arquivo.
+- **Write-lock à prova de driver.** `immediateTx` força o upgrade do
+  write lock com um `UPDATE` de zero linhas antes de qualquer leitura de
+  negócio: no tursogo (tx sempre DEFERRED) isso troca o `snapshot is
+  stale` no commit por `BUSY` retryável no upgrade; nos drivers que já
+  abrem immediate é no-op. `TestReserveConcurrency` (100 reservas
+  concorrentes) passa sem erro inesperado.
+
 ## [v0.1.1] - 2026-08-28
 
 ### Fixed

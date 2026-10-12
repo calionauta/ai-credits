@@ -9,7 +9,7 @@ import (
 
 func TestOpenSQLite(t *testing.T) {
 	dir := t.TempDir()
-	db, openErr := OpenSQLite("sqlite", filepath.Join(dir, "h.db"))
+	db, openErr := OpenSQLite("turso", filepath.Join(dir, "h.db"))
 	if openErr != nil {
 		t.Fatal(openErr)
 	}
