@@ -4,9 +4,12 @@ SQLite-backed credits/billing + BYOK for AI applications.
 
 > **Scope note**: since v0.4.1 the library also ships optional provider-
 > neutral payments and a Stripe adapter in the same module (`payments`,
-> `stripe` packages). The **core** ledger only depends on `modernc.org/sqlite`
-> and `golang.org/x/crypto`; `stripe-go` is used by the payments/stripe
-> packages, not the core `credits` package.
+> `stripe` packages). The **core** ledger only depends on
+> `turso.tech/database/tursogo` and `golang.org/x/crypto`; `stripe-go` is
+> used by the payments/stripe packages, not the core `credits` package.
+> The driver is caller-supplied (`OpenSQLite` takes the driver name), so
+> apps on ncruces/go-sqlite3 keep working — the lib itself no longer
+> depends on `modernc.org/sqlite`.
 
 ## Billing modes
 
@@ -52,14 +55,14 @@ import (
 	"log"
 
 	"github.com/calionauta/ai-credits/credits"
-	_ "modernc.org/sqlite" // app supplies the driver
+	_ "turso.tech/database/tursogo" // app supplies the driver
 )
 
 func main() {
 	ctx := context.Background()
 	// OpenSQLite applies the WAL + busy_timeout pragmas the concurrency-safe
 	// ledger needs; a bare sql.Open can deadlock on concurrent writes.
-	db, err := credits.OpenSQLite("sqlite", "app.db")
+	db, err := credits.OpenSQLite("turso", "app.db")
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -3,22 +3,20 @@ package stripe
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/stripe/stripe-go/v80/webhook"
-	_ "modernc.org/sqlite"
+	_ "turso.tech/database/tursogo"
 
 	"github.com/calionauta/ai-credits/credits"
 	"github.com/calionauta/ai-credits/payments"
 )
 
 func TestSubscriptionWebhookMapsPeriodAndStatus(t *testing.T) {
-	db, _ := sql.Open("sqlite", "file:stripe-sub?mode=memory&cache=shared")
-	defer db.Close()
+	db := testFileDB(t, "stripe-sub")
 	ledger, _ := credits.New(db, credits.Config{})
 	p, _ := payments.New(db, ledger, map[string]payments.CatalogItem{})
 	a, _ := New(p, Config{WebhookSecret: "whsec_test"})
@@ -38,8 +36,7 @@ func TestSubscriptionWebhookMapsPeriodAndStatus(t *testing.T) {
 }
 
 func TestWebhookFulfillmentIsIdempotent(t *testing.T) {
-	db, _ := sql.Open("sqlite", "file:stripe?mode=memory&cache=shared")
-	defer db.Close()
+	db := testFileDB(t, "stripe")
 	l, err := credits.New(db, credits.Config{})
 	if err != nil {
 		t.Fatal(err)
@@ -74,8 +71,7 @@ func TestWebhookFulfillmentIsIdempotent(t *testing.T) {
 }
 
 func TestInvoicePaidAutoGrant(t *testing.T) {
-	db, _ := sql.Open("sqlite", "file:stripe-invoice-paid?mode=memory&cache=shared")
-	defer db.Close()
+	db := testFileDB(t, "stripe-invoice-paid")
 	ledger, _ := credits.New(db, credits.Config{})
 	p, _ := payments.New(db, ledger, map[string]payments.CatalogItem{})
 	a, _ := New(p, Config{WebhookSecret: "whsec_test", SubscriptionCredits: map[string]int64{"pro": 100}})
@@ -111,8 +107,7 @@ func TestInvoicePaidAutoGrant(t *testing.T) {
 }
 
 func TestInvoiceProrationSkipped(t *testing.T) {
-	db, _ := sql.Open("sqlite", "file:stripe-proration?mode=memory&cache=shared")
-	defer db.Close()
+	db := testFileDB(t, "stripe-proration")
 	ledger, _ := credits.New(db, credits.Config{})
 	p, _ := payments.New(db, ledger, map[string]payments.CatalogItem{})
 	a, _ := New(p, Config{WebhookSecret: "whsec_test", SubscriptionCredits: map[string]int64{"pro": 100}})
@@ -136,8 +131,7 @@ func TestInvoiceProrationSkipped(t *testing.T) {
 }
 
 func TestInvoicePaymentFailedMarksPastDue(t *testing.T) {
-	db, _ := sql.Open("sqlite", "file:stripe-failed?mode=memory&cache=shared")
-	defer db.Close()
+	db := testFileDB(t, "stripe-failed")
 	ledger, _ := credits.New(db, credits.Config{})
 	p, _ := payments.New(db, ledger, map[string]payments.CatalogItem{})
 	// pre-create subscription active
@@ -159,8 +153,7 @@ func TestInvoicePaymentFailedMarksPastDue(t *testing.T) {
 }
 
 func TestSubscriptionTrialAndCancelFields(t *testing.T) {
-	db, _ := sql.Open("sqlite", "file:stripe-trial?mode=memory&cache=shared")
-	defer db.Close()
+	db := testFileDB(t, "stripe-trial")
 	ledger, _ := credits.New(db, credits.Config{})
 	p, _ := payments.New(db, ledger, map[string]payments.CatalogItem{})
 	a, _ := New(p, Config{WebhookSecret: "whsec_test"})

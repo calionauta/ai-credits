@@ -53,18 +53,40 @@ func New(db *sql.DB, cfg Config) (*Service, error) {
 	return s, nil
 }
 
-// immediateTx begins a write transaction. To get a true BEGIN IMMEDIATE
-// (acquiring the SQLite write lock up front, so concurrent writers serialize
-// instead of deadlocking with SQLITE_BUSY when a deferred tx upgrades mid-tx)
-// the guarantee must come from the DSN, not from an isolation constant:
-//   - modernc.org/sqlite: a non-empty DSN `_txlock=` sets beginMode; by itself
-//     LevelSerializable does NOT imply BEGIN IMMEDIATE here.
-//   - ncruces/go-sqlite3: maps LevelSerializable to "immediate".
+// immediateTx begins a write transaction that holds the SQLite write
+// lock from the start, so concurrent writers serialize instead of
+// deadlocking when a deferred tx upgrades mid-tx (SQLITE_BUSY_SNAPSHOT
+// at commit, which no busy_timeout retries).
 //
-// OpenSQLite sets `_txlock=immediate`, making the guarantee driver-independent
-// for the app-facing entry point. Callers that pass their own *sql.DB must
-// ensure their DSN sets _txlock=immediate (or an equivalent) — the isolation
-// constant alone is not relied upon here.
+// Drivers disagree on what begins immediately, so the guarantee lives
+// HERE, not in DSN dialect:
+//   - modernc.org/sqlite: DSN `_txlock=immediate` sets beginMode;
+//     LevelSerializable alone does NOT imply BEGIN IMMEDIATE.
+//   - ncruces/go-sqlite3: maps LevelSerializable to "immediate".
+//   - tursogo: honors neither — every tx begins DEFERRED.
+//
+// Hence the zero-row upgrade below: the first WRITE statement in a
+// deferred tx forces the SHARED→RESERVED upgrade up front, acquiring
+// the write lock before any business read observes shared state.
+// Contenders then meet plain SQLITE_BUSY at upgrade time (which
+// busy_timeout retries inside the engine) instead of a stale snapshot
+// at commit time (which nothing retries). On drivers that already
+// begin immediate the extra statement matches zero rows and is a
+// harmless no-op — behavior there is unchanged. All write paths go
+// through here, so the one place covers Reserve, Settle, Release and
+// Reconcile on every driver.
 func (s *Service) immediateTx(ctx context.Context) (*sql.Tx, error) {
-	return s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return nil, err
+	}
+	// Force the write-lock upgrade now. credit_accounts exists before any
+	// write path runs (EnsureSchema precedes every Service method that
+	// transacts), and matching zero rows still acquires RESERVED.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE credit_accounts SET updated_at = updated_at WHERE 1 = 0`); err != nil {
+		_ = tx.Rollback()
+		return nil, err
+	}
+	return tx, nil
 }
