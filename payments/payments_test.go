@@ -243,7 +243,14 @@ func TestAtomicGrantTx(t *testing.T) {
 }
 
 func TestAtomicGrantTxRollbackOnLedgerFailure(t *testing.T) {
-	db, _ := sql.Open("sqlite", "file:atomic-rollback?mode=memory&cache=shared")
+	// tursogo, not "sqlite": the lib's driver is tursogo and the modernc key
+	// set poisons path resolution (see AGENTS.md "SQLite pragmas"). A
+	// file-backed temp path, not mode=memory, which tursogo reads as a literal
+	// filename.
+	db, err := credits.OpenSQLite("turso", t.TempDir()+"/atomic-rollback.db")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
 	defer db.Close()
 	ledger, _ := credits.New(db, credits.Config{})
 	svc, _ := New(db, ledger, map[string]CatalogItem{"topup": {Credits: 100, Currency: "usd", AmountMinor: 1000}})
