@@ -7,6 +7,38 @@ e o projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+## [v0.6.0] - 2026-11-18
+
+### Added
+- **`MarkOutboxSettled(ctx, requestID)`.** Fecha a linha de `settlement_outbox`
+  de uma cobrança que foi liquidada por outro caminho. Antes desta função não
+  havia como fechar a linha que `EnqueueSettlement` escreve: quem liquidava
+  direto (`Settle` + `RecordUsage`, o caminho do biller quando a usage real já
+  está em mãos) deixava a linha em `pending`, o drainer a selecionava,
+  re-liquidava uma reserva já fechada, recebia erro e gravava
+  `status='failed'` numa cobrança que tinha sido capturada corretamente. Cada
+  request bem-sucedido deixava uma falha fantasma permanente, re-selecionada a
+  cada tick. A atualização é condicional a `status='pending'`, então um fecho
+  atrasado não sobrescreve o veredito do drainer.
+
+### Fixed
+- **`ProcessSettlementOutbox` liquidava? Não.** O drainer selecionava os
+  request_ids pendentes, re-selecionava as mesmas linhas e expirava o que
+  tivesse mais de uma hora — nunca chamava `SettleViaOutbox` nem lia usage. O
+  loop era um no-op que deixava a cobrança sem captura até a expiração
+  devolver a reserva: um mecanismo de recuperação que não recuperava nada, o que
+  é pior do que não ter nenhum, porque há chamador confiando nele. Agora a
+  usage registrada é a evidência de que uma cobrança é devida: com ela,
+  liquida (via `settleOnce`, para dois drainers não cobrarem duas vezes); sem
+  ela, a linha fica `pending`.
+- **Clock injetado no drainer.** Todos os carimbos vêm de `s.cfg.Now()`. Antes,
+  a janela de graça misturava `time.Now()` com o clock injetado, e um teste com
+  o clock fixo em 2026 via toda linha nova como expirada.
+- **`payments`: o teste de rollback atômico não compilava.** Chamava
+  `sql.Open("sqlite", …mode=memory…)` sem importar `sql`; o pacote construía e
+  os testes não. Passa a abrir por `credits.OpenSQLite("turso", …)`, que é o
+  driver do módulo.
+
 ### Changed
 - **Driver: tursogo, não modernc.** `modernc.org/sqlite` sai do `go.mod`; o
   lib depende de `turso.tech/database/tursogo`. `OpenSQLite` aceita
