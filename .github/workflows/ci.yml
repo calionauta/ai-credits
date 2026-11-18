@@ -5,29 +5,45 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  # A force-push or a second push to the same branch cancels the older run
+  # instead of paying for both. `main` is never cancelled mid-flight: a run
+  # that dies halfway through leaves no evidence that the commit it was
+  # checking was ever green.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        module: ["."]
-    defaults:
-      run:
-        working-directory: ${{ matrix.module }}
+    # A step that never returns otherwise holds a runner for GitHub's 6-hour
+    # default. Well above the measured cost (~2 min), so this is a hung-runner
+    # backstop, not a deadline.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.26"
+          # The toolchain line in go.mod (go1.26.11), not the `go` directive:
+          # `go 1.26.0` pins a floor, so go-version-file would settle on 1.26.0
+          # and every developer machine would be free to run a different patch
+          # — which is how 15 stdlib CVEs went unseen locally while CI was green.
+          go-version: "1.26.11"
           cache: true
       - name: Build
         run: go build ./...
       - name: Test (race)
-        run: go test -race ./...
+        # The turso native library is extracted into a process-shared cache on
+        # first use, non-atomically, so two test binaries starting together on a
+        # cold runner corrupt it (see credits/turso_cache_test.go for the full
+        # account). The per-package TestMain serializes that with flock.
+        run: go test -race -count=1 ./...
       - name: Lint
         uses: golangci/golangci-lint-action@v7
         with:
           version: v2.12.2
-          working-directory: ${{ matrix.module }}
       - name: Vulnerabilities
-        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+        # Pinned, not @latest: a gate whose version changes under you can go red
+        # (or silently stop checking) without a commit. Renovate-style bumps are
+        # a deliberate edit here.
+        run: go tool govulncheck ./...

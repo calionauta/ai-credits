@@ -16,7 +16,7 @@ func outboundPath(basePath, rest string) string {
 		return "/" + base
 	}
 	if base != "" {
-		first := strings.SplitN(rest, "/", 2)[0]
+		first, _, _ := strings.Cut(rest, "/")
 		if strings.HasSuffix(base, first) {
 			base = strings.TrimSuffix(strings.TrimSuffix(base, "/"), first)
 		}

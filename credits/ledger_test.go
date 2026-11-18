@@ -25,6 +25,7 @@ func testDB(t *testing.T) *sql.DB {
 	// foreign keys apply as post-open PRAGMAs below; busy_timeout keeps
 	// concurrent writers retrying inside the engine instead of
 	// surfacing BUSY to the ledger.
+	ctx := context.Background()
 	dsn := path + "?_busy_timeout=30000"
 	db, err := sql.Open("turso", dsn)
 	if err != nil {
@@ -34,7 +35,7 @@ func testDB(t *testing.T) *sql.DB {
 		"PRAGMA journal_mode = WAL",
 		"PRAGMA foreign_keys = ON",
 	} {
-		if _, err := db.Exec(pragma); err != nil {
+		if _, err := db.ExecContext(ctx, pragma); err != nil {
 			t.Fatalf("pragma %s: %v", pragma, err)
 		}
 	}

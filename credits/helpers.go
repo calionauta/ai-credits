@@ -1,6 +1,7 @@
 package credits
 
 import (
+	"context"
 	"database/sql"
 )
 
@@ -64,8 +65,8 @@ func openTursoLedger(path string) (*sql.DB, error) {
 		"PRAGMA temp_store = MEMORY",
 		"PRAGMA cache_size = -32000",
 	} {
-		if _, err := db.Exec(pragma); err != nil {
-			db.Close()
+		if _, err := db.ExecContext(context.Background(), pragma); err != nil {
+			_ = db.Close()
 			return nil, err
 		}
 	}
