@@ -7,6 +7,42 @@ e o projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+## [v0.6.1] - 2026-11-18
+
+### Fixed
+- **Uma cache de native library truncada se cura sozinha.** Um processo morto no
+  meio da extração (SIGKILL, OOM, reboot) deixava uma library pela metade que
+  todo run posterior rejeitava com `cached library file hash sum mismatch …
+  expected=<embedded>, got=<garbage>`, e o único remédio era um humano apagando
+  `~/Library/Caches/turso-go`. A warm-up agora reconhece o mismatch, descarta a
+  cache e carrega de novo. A retentativa é limitada — um erro reparável, um
+  rebuild — então uma library genuinamente ruim reporta em vez de girar, e um
+  erro de load não relacionado nunca apaga uma cache que funciona.
+- **O lock morava dentro do diretório que ele purga.** Purgar a cache segurando
+  o lock unlinks um arquivo travado; o próximo processo cria um arquivo novo no
+  mesmo path e pega um lock que ninguém mais segura — dois extractors, exatamente
+  a corrida que esse pacote existe para parar. Ele passa a viver ao lado da
+  árvore, como o `internal/dbload` do gogogo já fazia.
+- **`purge` apagava só os arquivos do topo.** O loader extrai para um
+  subdiretório com nome de hash (`turso-go/<hash8>/lib…`), então aquele formato
+  não reparava nada enquanto reportava sucesso. Agora remove a árvore.
+- **CI: a extração é serializada, e a suíte deixou de mentir sobre o motivo.**
+  Três runs seguidos morreram com o mismatch acima, reportado a partir de
+  `TestCredentialStoreRoundTrip` — que lê como teste de credencial flaky e não
+  é. O `tursogo` extrai a native library de uma cópia embutida para uma cache
+  compartilhada entre processos, e a extração não é atômica: `os.Create`
+  (trunca in place), copia, e só então compara o hash que acabou de escrever.
+  Dois inicializadores que se sobrepõem veem um arquivo que existe e não está
+  vazio, ambos o leem no meio da cópia, e ambos falham — o `got` é um snapshot
+  de dois escritores intercalados, o que explica a diferença a cada run.
+- **Windows voltou a ter `TestMain`.** A warm-up nasceu com `//go:build
+  !windows` no arquivo compartilhado, então pacotes Windows compilavam com
+  nenhum `TestMain` — silenciosamente, porque a ausência de um `TestMain` não é
+  erro. O módulo embute `libs/windows_amd64`, então a corrida existe lá também.
+  Passa a ser um arquivo posix (`flock`) e um windows (`LockFileEx`: não há
+  `flock` no Windows), com as constantes de modo compartilhadas num terceiro; os
+  arquivos de teste ficam sem tag para que as duas plataformas ganhem um.
+
 ## [v0.6.0] - 2026-11-18
 
 ### Added
