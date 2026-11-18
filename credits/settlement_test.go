@@ -31,8 +31,13 @@ func TestSettlementOutboxGrace(t *testing.T) {
 	// stale pending should expire after 1h
 	r2, _ := s.Reserve(ctx, testUser, "req-stale", 50)
 	_ = s.EnqueueSettlement(ctx, "req-stale", testUser, r2.ID, "goai", "gpt-4o-mini")
-	// fake old created_at
-	_, _ = s.db.ExecContext(ctx, `UPDATE settlement_outbox SET created_at=? WHERE request_id=?`, time.Now().Add(-2*time.Hour).Unix(), "req-stale")
+	// Backdate it past the grace window. The reference MUST be the service's
+	// injected clock, not time.Now(): the drainer reads s.cfg.Now(), and this
+	// helper pins it to 2026-08-25. Mixing the two made the test pass only
+	// because the drainer used the real clock — the very inconsistency that
+	// made the grace window non-deterministic. See ProcessSettlementOutbox.
+	_, _ = s.db.ExecContext(ctx, `UPDATE settlement_outbox SET created_at=? WHERE request_id=?`,
+		s.cfg.Now().Add(-2*time.Hour).Unix(), "req-stale")
 	if err := s.ProcessSettlementOutbox(ctx, 10); err != nil {
 		t.Fatal(err)
 	}
