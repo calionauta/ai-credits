@@ -1,0 +1,41 @@
+name: release-please
+
+# Owns versioning from v0.7.1 onward. On every main push it opens (or updates)
+# a "chore(main): release X.Y.Z" PR from the conventional commits since the
+# last tag. A human merges it; that merge creates the tag and the GitHub
+# Release.
+#
+# What it does NOT do: promote CHANGELOG [Unreleased] entries. release-please
+# GENERATES the notes from the Pull Requests API (changelog-type: github) and
+# inserts them ABOVE the newest `## [vX.Y.Z]` section, so the hand-written
+# Portuguese history from v0.1.1 through v0.7.0 stays as it was. Nothing reads
+# [Unreleased] — it is kept because the CHANGELOG says it follows Keep a
+# Changelog, not because the bot parses it.
+#
+# The manifest is seeded at 0.7.0 because v0.7.0 was cut by hand (the
+# BackendURL change had a Portuguese entry that github-type notes cannot
+# reproduce). The first release-please PR will therefore propose 0.7.1 or
+# 0.8.0 depending on the commits after it, not a re-cut of 0.7.0.
+#
+# There is no deploy job and no binary build here: ai-credits is a library, so
+# a release is the tag plus the notes. GITHUB_TOKEN's tag push starts no
+# workflow run (anti-recursion), which is why ci.yml only triggers on `main`
+# — nothing needs the tag event.
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v5
+        id: release
+        with:
+          config-file: .github/release-please-config.json
+          manifest-file: .github/.release-please-manifest.json

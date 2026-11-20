@@ -7,6 +7,8 @@ e o projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+## [v0.7.0] - 2026-11-20
+
 ### Added
 - **`stripe.Config.BackendURL`.** Sobrescreve a base URL que o stripe-go usa no
   `CreateCheckout`. Vazio = `api.stripe.com`, como antes. Com ele o caminho de
