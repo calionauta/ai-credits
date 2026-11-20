@@ -7,6 +7,25 @@ e o projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+### Added
+- **`stripe.Config.BackendURL`.** Sobrescreve a base URL que o stripe-go usa no
+  `CreateCheckout`. Vazio = `api.stripe.com`, como antes. Com ele o caminho de
+  saída do adapter passa a ser testável offline: antes, `CreateCheckout` criava
+  a linha de purchase, montava a sessão e só então batia na Stripe de verdade,
+  então a única forma de exercitá-lo era uma conta test-mode — e por isso ele
+  era o único caminho exportado do pacote sem teste (a suíte só cobre webhook
+  de entrada). `stripe/stripe_checkout_test.go` agora aponta o adapter para um
+  `httptest.Server`, prova o path `/v1/checkout/sessions`, a
+  `Idempotency-Key` derivada do purchase e o line item precificado pelo catálogo
+  local. A resolução é por chamada (`backend()`), não um `stripe.SetBackend`
+  global: estado de pacote em teste vaza para todo chamador do processo.
+
+### Docs
+- **`docs/testing.md`** separa as duas metades do adapter (webhooks sintéticos,
+  checkout sintético) e diz que a suíte E2E não é necessária para cobrir
+  checkout. **`docs/payments.md`** documenta o campo ao lado do exemplo de
+  configuração.
+
 ## [v0.6.1] - 2026-11-18
 
 ### Fixed
