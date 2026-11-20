@@ -25,6 +25,12 @@ const prorationGraceSeconds = int64(86400)
 type Config struct {
 	SecretKey, WebhookSecret, SuccessURL, CancelURL string
 	SubscriptionCredits                             map[string]int64
+	// BackendURL overrides the base URL stripe-go calls for CreateCheckout.
+	// Empty means the stripe-go default (api.stripe.com). A local emulator, a
+	// proxy, or an httptest server in a suite is the intended use; without it
+	// the only way to reach CreateCheckout is a live Stripe account, which is
+	// why that path had no offline test.
+	BackendURL string
 }
 type Adapter struct {
 	payments *payments.Service
@@ -69,12 +75,24 @@ func (a *Adapter) CreateCheckout(ctx context.Context, userID, sku string) (*Chec
 		}},
 	}
 	params.SetIdempotencyKey("credits-checkout:" + p.ID)
-	client := session.Client{B: stripego.GetBackend(stripego.APIBackend), Key: a.cfg.SecretKey}
+	client := session.Client{B: a.backend(), Key: a.cfg.SecretKey}
 	cs, err := client.New(params)
 	if err != nil {
 		return nil, err
 	}
 	return &Checkout{PurchaseID: p.ID, URL: cs.URL, SessionID: cs.ID}, nil
+}
+
+// backend resolves the API backend per call. CreateCheckout is the only
+// outbound path, so an override costs one branch and keeps the global
+// stripe-go backend untouched (a package-level SetBackend in a test would leak
+// into every other caller in the process).
+func (a *Adapter) backend() stripego.Backend {
+	if a.cfg.BackendURL == "" {
+		return stripego.GetBackend(stripego.APIBackend)
+	}
+	return stripego.GetBackendWithConfig(stripego.APIBackend,
+		&stripego.BackendConfig{URL: &a.cfg.BackendURL})
 }
 
 func (a *Adapter) HandleWebhook(w http.ResponseWriter, r *http.Request) {

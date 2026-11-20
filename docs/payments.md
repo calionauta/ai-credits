@@ -17,6 +17,12 @@ stripeAdapter, _ := stripecredits.New(payments, stripecredits.Config{
 })
 ```
 
+`Config.BackendURL` overrides the stripe-go base URL. Empty is the live
+`api.stripe.com`; anything else (a local emulator, a recording proxy, an
+`httptest` server) makes `CreateCheckout` reachable offline. The test suite uses
+it, which is what makes the outbound half of the adapter testable without a
+Stripe test-mode account — see [`docs/testing.md`](testing.md).
+
 The browser submits only an allowlisted SKU. Stripe metadata carries an opaque local purchase ID, never user-controlled credits or prices. Verified events are durably received before processing. Delivery idempotency uses provider/event ID; economic idempotency uses provider/payment ID and the core ledger key.
 
 ## Operations

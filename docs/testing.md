@@ -1,8 +1,8 @@
 # Testing
 
 The root commands (unit tests, lint, vuln scan) are in the README. This page
-covers the Stripe webhook coverage: the synthetic (offline) tests and the
-opt-in E2E suite against real Stripe test-mode.
+covers the Stripe adapter: the synthetic (offline) tests and the opt-in E2E
+suite against real Stripe test-mode.
 
 ## Synthetic Stripe webhooks
 
@@ -23,10 +23,25 @@ go test -race ./...
 
 See `stripe/stripe_test.go` and `payments/payments_test.go`.
 
+## Synthetic Stripe checkout
+
+Webhooks are the inbound half. The outbound half — `CreateCheckout` creating the
+purchase row, POSTing the Checkout Session, and returning its URL — runs against
+an `httptest` server by setting `Config.BackendURL`:
+
+```go
+stripecredits.New(payments, stripecredits.Config{..., BackendURL: srv.URL})
+```
+
+See `stripe/stripe_checkout_test.go`. It asserts the request path, the
+idempotency key derived from the purchase, and the line item priced from the
+local catalog, so a pricing or wire-format regression fails without a key.
+
 ## E2E with real Stripe (optional, for contributors)
 
 Integration tests that hit the Stripe test-mode API are **opt-in** and require
-test keys. They are not needed for normal library use.
+test keys. They are not needed for normal library use, and they are not needed
+for checkout coverage — `BackendURL` covers that offline.
 
 1. Create a Stripe test account and get `STRIPE_SECRET_KEY` (`sk_test_...`) and
    `STRIPE_WEBHOOK_SECRET` (`whsec_...`).
