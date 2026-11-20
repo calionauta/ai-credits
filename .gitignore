@@ -9,6 +9,7 @@ coverage.out
 # Tooling cruft
 .pi/
 .stelow/
+.DS_Store
 
 stelow.json
 state.md
