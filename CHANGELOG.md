@@ -5,6 +5,10 @@ Todas as mudanças notáveis em `ai-credits` são documentadas neste arquivo.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e o projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## 0.7.1 (2026-11-20)
+
+**Full Changelog**: https://github.com/calionauta/ai-credits/compare/v0.7.0...v0.7.1
+
 ## [Unreleased]
 
 ## [v0.7.0] - 2026-11-20
